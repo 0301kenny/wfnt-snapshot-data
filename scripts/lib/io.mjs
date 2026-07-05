@@ -34,3 +34,23 @@ export async function listJsonDates(dir) {
     throw error;
   }
 }
+
+export async function listCsvGzDates(dir) {
+  try {
+    const years = await readdir(dir, { withFileTypes: true });
+    const dates = [];
+    for (const year of years) {
+      if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
+      const files = await readdir(join(dir, year.name), { withFileTypes: true });
+      for (const file of files) {
+        if (file.isFile() && /^\d{4}-\d{2}-\d{2}\.csv\.gz$/.test(file.name)) {
+          dates.push(file.name.slice(0, -7));
+        }
+      }
+    }
+    return dates.sort();
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}

@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { gunzipSync } from 'node:zlib';
 import { runSnapshot } from '../scripts/run.mjs';
 
 function jsonBody(rows) {
@@ -18,6 +19,7 @@ function fixtureBodies(overrides = {}) {
     tpex_mainboard_close: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '006201', CompanyName: '元大富櫃50', Close: '1' }]),
     tpex_3insti: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', TotalDifference: '1' }]),
     tpex_margin: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '1' }]),
+    tdcc: '資料日期,證券代號,持股分級,人數\n20260704,2330,1,1\n20260704,0050,2,3\n',
     ...overrides,
   };
 }
@@ -30,23 +32,29 @@ const urls = {
   tpex_mainboard_close: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',
   tpex_3insti: 'https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading',
   tpex_margin: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance',
+  tdcc: 'https://opendata.tdcc.com.tw/getOD.ashx?id=1-5',
 };
 
 function response(body, status = 200) {
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body ?? '', 'utf8');
   return {
     ok: status >= 200 && status < 300,
     status,
     async text() {
-      return body;
+      return bytes.toString('utf8');
+    },
+    async arrayBuffer() {
+      return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
     },
   };
 }
 
-function fetcherFor(bodies, failures = {}) {
+function fetcherFor(bodies, failures = {}, calls = []) {
   const byUrl = new Map(Object.entries(urls).map(([key, url]) => [url, key]));
   return async (url) => {
     const key = byUrl.get(url);
     assert.ok(key, `unexpected URL ${url}`);
+    calls.push({ key, url });
     if (failures[key]) return response(failures[key].body ?? '', failures[key].status);
     return response(bodies[key]);
   };
@@ -95,12 +103,17 @@ test('single endpoint failure records deterministic lastError and exits zero', a
   });
 });
 
-test('first run writes raw paths and manifest contract with seven datasets', async () => {
+test('first run writes raw paths and manifest contract with eight datasets', async () => {
   await withTempDir(async (root) => {
-    const summary = await runSnapshot({ rootDir: root, fetcher: fetcherFor(fixtureBodies()), now: () => new Date('2026-07-06T13:45:00Z') });
+    const calls = [];
+    const bodies = fixtureBodies();
+    const summary = await runSnapshot({ rootDir: root, fetcher: fetcherFor(bodies, {}, calls), now: () => new Date('2026-07-06T13:45:00Z') });
     assert.equal(summary.exitCode, 0);
+    assert.ok(calls.some((call) => call.key === 'tdcc'));
     const raw = await readFile(join(root, 'data', 'raw', 'twse', 'stock_day_all', '2026', '2026-07-06.json'), 'utf8');
-    assert.equal(raw, fixtureBodies().twse_stock_day_all);
+    assert.equal(raw, bodies.twse_stock_day_all);
+    const tdccRaw = await readFile(join(root, 'data', 'raw', 'tdcc', '2026', '2026-07-04.csv.gz'));
+    assert.equal(gunzipSync(tdccRaw).toString('utf8'), bodies.tdcc);
     const m = await manifest(root);
     assert.equal(m.schemaVersion, 1);
     assert.equal(m.generatedAt, '2026-07-06T13:45:00Z');
@@ -113,9 +126,114 @@ test('first run writes raw paths and manifest contract with seven datasets', asy
       'tpex_mainboard_close',
       'tpex_3insti',
       'tpex_margin',
+      'tdcc',
     ]);
     assert.equal(m.datasets.tpex_3insti.ok, true);
+    assert.deepEqual(m.datasets.tdcc, {
+      firstWeek: '2026-07-04',
+      latestWeek: '2026-07-04',
+      weeks: 1,
+      ok: true,
+    });
     assert.equal(m.paths.raw, 'data/raw/{source_dataset}/{yyyy}/{date}.json');
+    assert.equal(m.paths.rawTdcc, 'data/raw/tdcc/{yyyy}/{date}.csv.gz');
+  });
+});
+
+test('fresh tdcc latestWeek skips default fetch and leaves manifest unchanged', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({ rootDir: root, fetcher: fetcherFor(fixtureBodies()), now: () => new Date('2026-07-06T13:45:00Z') });
+    const before = await readFile(join(root, 'data', 'manifest.json'), 'utf8');
+    const calls = [];
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies(), {}, calls),
+      now: () => new Date('2026-07-09T01:00:00Z'),
+    });
+    const after = await readFile(join(root, 'data', 'manifest.json'), 'utf8');
+    assert.equal(summary.exitCode, 0);
+    assert.equal(after, before);
+    assert.equal(calls.some((call) => call.key === 'tdcc'), false);
+  });
+});
+
+test('stale tdcc latestWeek is fetched by default', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({ rootDir: root, fetcher: fetcherFor(fixtureBodies()), now: () => new Date('2026-07-06T13:45:00Z') });
+    const calls = [];
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies(), {}, calls),
+      now: () => new Date('2026-07-12T01:00:00Z'),
+    });
+    assert.equal(summary.exitCode, 0);
+    assert.ok(calls.some((call) => call.key === 'tdcc'));
+  });
+});
+
+test('explicit tdcc run bypasses freshness skip and same content is byte-level no-op', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies()),
+      datasets: ['tdcc'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    const before = await readFile(join(root, 'data', 'manifest.json'), 'utf8');
+    const rawBefore = await readFile(join(root, 'data', 'raw', 'tdcc', '2026', '2026-07-04.csv.gz'));
+    const calls = [];
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies(), {}, calls),
+      datasets: ['tdcc'],
+      now: () => new Date('2026-07-09T01:00:00Z'),
+    });
+    const after = await readFile(join(root, 'data', 'manifest.json'), 'utf8');
+    const rawAfter = await readFile(join(root, 'data', 'raw', 'tdcc', '2026', '2026-07-04.csv.gz'));
+    assert.equal(summary.exitCode, 0);
+    assert.equal(summary.results.find((result) => result.key === 'tdcc').status, 'same');
+    assert.ok(calls.some((call) => call.key === 'tdcc'));
+    assert.equal(after, before);
+    assert.deepEqual(rawAfter, rawBefore);
+  });
+});
+
+test('tdcc schema failure records lastError while daily endpoints still succeed', async () => {
+  await withTempDir(async (root) => {
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({ tdcc: '證券代號,持股分級\n2330,1\n' })),
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    assert.equal(summary.exitCode, 0);
+    const m = await manifest(root);
+    assert.equal(m.datasets.tdcc.ok, false);
+    assert.equal(m.datasets.tdcc.lastError, 'schema: 缺少欄位 資料日期');
+    assert.equal(m.datasets.twse_mi_index.ok, true);
+    await assert.rejects(readFile(join(root, 'data', 'raw', 'tdcc', '2026', '2026-07-04.csv.gz')));
+  });
+});
+
+test('different tdcc content on same week revises compressed raw', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies()),
+      datasets: ['tdcc'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    const revisedTdcc = '資料日期,證券代號,持股分級,人數\n20260704,2330,1,9\n20260704,0050,2,3\n';
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({ tdcc: revisedTdcc })),
+      datasets: ['tdcc'],
+      now: () => new Date('2026-07-06T14:45:00Z'),
+    });
+    assert.equal(summary.exitCode, 0);
+    assert.match(summary.commitMessage, /revise/);
+    assert.match(summary.commitMessage, /tdcc/);
+    const raw = await readFile(join(root, 'data', 'raw', 'tdcc', '2026', '2026-07-04.csv.gz'));
+    assert.equal(gunzipSync(raw).toString('utf8'), revisedTdcc);
   });
 });
 

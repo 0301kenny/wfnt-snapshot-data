@@ -1,4 +1,4 @@
-import { maxIsoDate, parseTradingDate } from './lib/date.mjs';
+import { maxIsoDate, parseGregorianDate, parseTradingDate } from './lib/date.mjs';
 
 export const ENDPOINTS = [
   {
@@ -65,6 +65,16 @@ export const ENDPOINTS = [
     preferRowDate: true,
     requiredFields: ['Date', 'SecuritiesCompanyCode', 'CompanyName', 'MarginPurchaseBalance'],
   },
+  {
+    key: 'tdcc',
+    sourceDataset: 'tdcc',
+    url: 'https://opendata.tdcc.com.tw/getOD.ashx?id=1-5',
+    format: 'csv',
+    accept: 'text/csv,text/plain,*/*',
+    timeoutMs: 300_000,
+    dateField: '資料日期',
+    requiredFields: ['資料日期', '證券代號'],
+  },
 ];
 
 export function endpointByKey(key) {
@@ -95,4 +105,64 @@ export function dateFromRows(endpoint, rows, anchorDate) {
     ? maxIsoDate(rows.map((row) => parseTradingDate(row?.[endpoint.dateField])))
     : null;
   return parsed ?? anchorDate;
+}
+
+function parseCsvLine(line) {
+  const cells = [];
+  let current = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (quoted) {
+      if (char === '"') {
+        if (line[index + 1] === '"') {
+          current += '"';
+          index += 1;
+        } else {
+          quoted = false;
+        }
+      } else {
+        current += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === ',') {
+      cells.push(current);
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  cells.push(current);
+  return cells;
+}
+
+export function validateTdccCsv(body) {
+  if (!body || body.length === 0) {
+    return { ok: false, error: 'fetch: empty body' };
+  }
+  const text = Buffer.isBuffer(body) ? body.toString('utf8') : String(body);
+  const lines = text.split(/\r\n|\n|\r/);
+  const headerLine = lines.find((line) => line.length > 0);
+  if (!headerLine) {
+    return { ok: false, error: 'schema: CSV 無 header' };
+  }
+  const header = parseCsvLine(headerLine);
+  if (header.length > 0) header[0] = header[0].replace(/^\uFEFF/, '');
+  const missing = ['資料日期', '證券代號'].filter((field) => !header.includes(field));
+  if (missing.length > 0) {
+    return { ok: false, error: `schema: 缺少欄位 ${missing.join(',')}` };
+  }
+  const dateIndex = header.indexOf('資料日期');
+  const dates = [];
+  for (const line of lines.slice(lines.indexOf(headerLine) + 1)) {
+    if (!line.trim()) continue;
+    const cells = parseCsvLine(line);
+    dates.push(parseGregorianDate(cells[dateIndex]));
+  }
+  const date = maxIsoDate(dates);
+  if (!date) {
+    return { ok: false, error: 'schema: 日期欄不可解析' };
+  }
+  return { ok: true, date };
 }

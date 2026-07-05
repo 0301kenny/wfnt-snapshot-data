@@ -8,10 +8,15 @@ export const DATASET_KEYS = [
   'tpex_mainboard_close',
   'tpex_3insti',
   'tpex_margin',
+  'tdcc',
 ];
 
 export function emptyDatasetEntry() {
   return { first: null, latest: null, days: 0, ok: false };
+}
+
+export function emptyWeeklyDatasetEntry() {
+  return { firstWeek: null, latestWeek: null, weeks: 0, ok: false };
 }
 
 export function normalizeManifest(input) {
@@ -20,11 +25,15 @@ export function normalizeManifest(input) {
     generatedAt: input?.generatedAt ?? null,
     latestTradingDate: input?.latestTradingDate ?? null,
     datasets: {},
-    paths: { raw: 'data/raw/{source_dataset}/{yyyy}/{date}.json' },
+    paths: {
+      raw: 'data/raw/{source_dataset}/{yyyy}/{date}.json',
+      rawTdcc: 'data/raw/tdcc/{yyyy}/{date}.csv.gz',
+    },
     archives: [],
   };
   for (const key of DATASET_KEYS) {
-    manifest.datasets[key] = { ...emptyDatasetEntry(), ...(input?.datasets?.[key] ?? {}) };
+    const empty = key === 'tdcc' ? emptyWeeklyDatasetEntry() : emptyDatasetEntry();
+    manifest.datasets[key] = { ...empty, ...(input?.datasets?.[key] ?? {}) };
     if (manifest.datasets[key].lastError === undefined) {
       delete manifest.datasets[key].lastError;
     }
@@ -34,12 +43,21 @@ export function normalizeManifest(input) {
 
 export function setDatasetSuccess(manifest, key, dates) {
   const sorted = [...dates].sort();
-  manifest.datasets[key] = {
-    first: sorted[0] ?? null,
-    latest: sorted.at(-1) ?? null,
-    days: sorted.length,
-    ok: sorted.length > 0,
-  };
+  if (key === 'tdcc') {
+    manifest.datasets[key] = {
+      firstWeek: sorted[0] ?? null,
+      latestWeek: sorted.at(-1) ?? null,
+      weeks: sorted.length,
+      ok: sorted.length > 0,
+    };
+  } else {
+    manifest.datasets[key] = {
+      first: sorted[0] ?? null,
+      latest: sorted.at(-1) ?? null,
+      days: sorted.length,
+      ok: sorted.length > 0,
+    };
+  }
 }
 
 export function setDatasetError(manifest, key, lastError) {
