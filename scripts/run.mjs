@@ -1,9 +1,10 @@
 import { appendFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ENDPOINTS, dateFromRows, endpointByKey, validateRows } from './endpoints.mjs';
-import { yyyyOf } from './lib/date.mjs';
+import { gunzipSync, gzipSync } from 'node:zlib';
+import { ENDPOINTS, dateFromRows, endpointByKey, validateRows, validateTdccCsv } from './endpoints.mjs';
+import { daysBetweenIsoDates, taipeiIsoDate, yyyyOf } from './lib/date.mjs';
 import { sha256Hex } from './lib/hash.mjs';
-import { listJsonDates, readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
+import { listCsvGzDates, listJsonDates, readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
 import {
   DATASET_KEYS,
   normalizeManifest,
@@ -14,7 +15,8 @@ import {
 } from './lib/manifest.mjs';
 
 const RETRIES = 3;
-const TIMEOUT_MS = 60_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_ACCEPT = 'application/json';
 const USER_AGENT = 'wfnt-snapshot-data/0.1 (+https://github.com/0301kenny/wfnt-snapshot-data)';
 
 function sleep(ms) {
@@ -31,11 +33,28 @@ async function fetchTextWithRetry(endpoint, fetcher) {
   for (let attempt = 1; attempt <= RETRIES; attempt += 1) {
     try {
       const response = await fetcher(endpoint.url, {
-        signal: AbortSignal.timeout(TIMEOUT_MS),
-        headers: { accept: 'application/json', 'user-agent': USER_AGENT },
+        signal: AbortSignal.timeout(endpoint.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+        headers: { accept: endpoint.accept ?? DEFAULT_ACCEPT, 'user-agent': USER_AGENT },
       });
-      const body = await response.text();
-      if (!response.ok) return { ok: false, error: `HTTP ${response.status}` };
+      if (!response.ok) {
+        lastError = `HTTP ${response.status}`;
+        if (attempt < RETRIES) {
+          await sleep(250 * 2 ** (attempt - 1));
+          continue;
+        }
+        return { ok: false, error: lastError };
+      }
+      const body = response.arrayBuffer
+        ? Buffer.from(await response.arrayBuffer())
+        : Buffer.from(await response.text(), 'utf8');
+      if (body.length === 0) {
+        lastError = 'fetch: empty body';
+        if (attempt < RETRIES) {
+          await sleep(250 * 2 ** (attempt - 1));
+          continue;
+        }
+        return { ok: false, error: lastError };
+      }
       return { ok: true, body };
     } catch (error) {
       lastError = deterministicFetchError(error);
@@ -47,7 +66,7 @@ async function fetchTextWithRetry(endpoint, fetcher) {
 
 function parseJsonRows(body) {
   try {
-    return { ok: true, rows: JSON.parse(body) };
+    return { ok: true, rows: JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : body) };
   } catch {
     return { ok: false, error: 'schema: JSON 不可解析' };
   }
@@ -81,6 +100,10 @@ function rawPath(rootDir, endpoint, date) {
   return join(rootDir, 'data', 'raw', endpoint.sourceDataset, yyyyOf(date), `${date}.json`);
 }
 
+function rawTdccPath(rootDir, date) {
+  return join(rootDir, 'data', 'raw', 'tdcc', yyyyOf(date), `${date}.csv.gz`);
+}
+
 async function previousRawHash(rootDir, endpoint, date) {
   const dir = join(rootDir, 'data', 'raw', endpoint.sourceDataset);
   const dates = (await listJsonDates(dir)).filter((storedDate) => storedDate < date);
@@ -92,6 +115,10 @@ async function previousRawHash(rootDir, endpoint, date) {
 
 async function storedDatesForEndpoint(rootDir, endpoint) {
   return listJsonDates(join(rootDir, 'data', 'raw', endpoint.sourceDataset));
+}
+
+async function storedWeeksForTdcc(rootDir) {
+  return listCsvGzDates(join(rootDir, 'data', 'raw', 'tdcc'));
 }
 
 async function writeRawIfChanged(rootDir, endpoint, date, body, options) {
@@ -118,14 +145,44 @@ async function writeRawIfChanged(rootDir, endpoint, date, body, options) {
   }
 }
 
+async function writeTdccRawIfChanged(rootDir, date, body, options) {
+  const destination = rawTdccPath(rootDir, date);
+  const bodyHash = sha256Hex(body);
+  try {
+    const current = gunzipSync(await readFile(destination));
+    const currentHash = sha256Hex(current);
+    if (currentHash === bodyHash && !options.force) {
+      return { status: 'same', path: destination };
+    }
+    await writeFileEnsured(destination, gzipSync(body));
+    return { status: currentHash === bodyHash ? 'forced' : 'revise', path: destination };
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await writeFileEnsured(destination, gzipSync(body));
+    return { status: 'write', path: destination };
+  }
+}
+
 async function loadEndpoint(endpoint, fetcher) {
   const fetched = await fetchTextWithRetry(endpoint, fetcher);
   if (!fetched.ok) return fetched;
+  if (endpoint.key === 'tdcc') {
+    const schema = validateTdccCsv(fetched.body);
+    if (!schema.ok) return schema;
+    return { ok: true, body: fetched.body, date: schema.date };
+  }
   const parsed = parseJsonRows(fetched.body);
   if (!parsed.ok) return parsed;
   const schema = validateRows(endpoint, parsed.rows);
   if (!schema.ok) return schema;
   return { ok: true, body: fetched.body, rows: parsed.rows };
+}
+
+function shouldSkipFreshTdcc(manifest, { force, explicitTdcc, today }) {
+  if (force || explicitTdcc) return false;
+  const latestWeek = manifest.datasets.tdcc?.latestWeek;
+  if (!latestWeek) return false;
+  return daysBetweenIsoDates(latestWeek, today) <= 7;
 }
 
 async function writeGithubOutput(rootDir, summary) {
@@ -146,17 +203,28 @@ function countByMarket(results, market) {
 
 function commitMessage(results, changedDates) {
   const revised = results.filter((result) => result.status === 'revise');
-  const tradingDate = [...changedDates].sort().at(-1) ?? null;
-  if (!tradingDate) return 'snapshot: no-op';
+  const changedTdcc = results.filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status));
+  const dailyChangedDates = results
+    .filter((result) => result.market && ['write', 'revise', 'forced'].includes(result.status))
+    .map((result) => result.date)
+    .sort();
+  const tradingDate = dailyChangedDates.at(-1) ?? null;
+  const tdccDate = changedTdcc.map((result) => result.date).sort().at(-1) ?? null;
   if (revised.length > 0) {
-    return `revise: ${tradingDate} [${revised.map((result) => `${result.market}:${result.key.replace(`${result.market}_`, '')}`).join(',')}]`;
+    const reviseDate = [...changedDates].sort().at(-1) ?? tdccDate;
+    return `revise: ${reviseDate} [${revised.map((result) => result.key === 'tdcc' ? 'tdcc' : `${result.market}:${result.key.replace(`${result.market}_`, '')}`).join(',')}]`;
   }
+  if (!tradingDate && tdccDate) return `snapshot(tdcc): ${tdccDate}`;
+  if (!tradingDate) return 'snapshot: no-op';
   const changed = results.filter((result) => ['write', 'forced'].includes(result.status));
-  const retry = changed.length < results.filter((result) => result.ok).length ? ' retry' : '';
-  const scoped = results.length === ENDPOINTS.length
+  const dailyResults = results.filter((result) => result.market);
+  const dailyChanged = changed.filter((result) => result.market);
+  const retry = dailyChanged.length < dailyResults.filter((result) => result.ok).length ? ' retry' : '';
+  const scoped = dailyResults.length === ENDPOINTS.filter((endpoint) => endpoint.market).length
     ? `[twse ${countByMarket(results, 'twse')}, tpex ${countByMarket(results, 'tpex')}]`
-    : `[${changed.map((result) => `${result.market}:${result.key.replace(`${result.market}_`, '')}`).join(',')}]`;
-  return `snapshot: ${tradingDate}${retry} ${scoped}`;
+    : `[${dailyChanged.map((result) => `${result.market}:${result.key.replace(`${result.market}_`, '')}`).join(',')}]`;
+  const tdccSuffix = tdccDate ? ` + tdcc:${tdccDate}` : '';
+  return `snapshot: ${tradingDate}${retry} ${scoped}${tdccSuffix}`;
 }
 
 export async function runSnapshot({
@@ -171,7 +239,10 @@ export async function runSnapshot({
   const oldManifestString = stableManifestString(normalizeManifest(await readJsonIfExists(manifestPath, {})));
   const manifest = normalizeManifest(JSON.parse(oldManifestString));
   const endpointsToWrite = ENDPOINTS.filter((endpoint) => selected.has(endpoint.key));
-  const markets = [...new Set(endpointsToWrite.map((endpoint) => endpoint.market))];
+  const dailyEndpointsToWrite = endpointsToWrite.filter((endpoint) => endpoint.market);
+  const tdccEndpoint = endpointsToWrite.find((endpoint) => endpoint.key === 'tdcc') ?? null;
+  const explicitTdcc = datasets?.includes('tdcc') ?? false;
+  const markets = [...new Set(dailyEndpointsToWrite.map((endpoint) => endpoint.market))];
   const anchors = new Map();
   const results = [];
   let anchorsFailed = 0;
@@ -182,7 +253,7 @@ export async function runSnapshot({
     if (!loaded.ok) {
       anchorsFailed += 1;
       const marketError = loaded.error === 'schema: 日期欄不可解析' ? loaded.error : `anchor: ${loaded.error}`;
-      for (const endpoint of endpointsToWrite.filter((item) => item.market === market)) {
+      for (const endpoint of dailyEndpointsToWrite.filter((item) => item.market === market)) {
         const error = endpoint.key === anchor.key ? loaded.error : marketError;
         setDatasetError(manifest, endpoint.key, error);
         results.push({ key: endpoint.key, market, ok: false, error });
@@ -203,7 +274,7 @@ export async function runSnapshot({
     anchors.set(market, { endpoint: anchor, loaded, date: anchorDate });
   }
 
-  for (const endpoint of endpointsToWrite) {
+  for (const endpoint of dailyEndpointsToWrite) {
     if (!anchors.has(endpoint.market)) continue;
     const anchor = anchors.get(endpoint.market);
     const loaded = endpoint.anchor ? anchor.loaded : await loadEndpoint(endpoint, fetcher);
@@ -235,6 +306,27 @@ export async function runSnapshot({
     console.log(`[${writeResult.status}] ${endpoint.key}: ${date}`);
   }
 
+  if (tdccEndpoint) {
+    const today = taipeiIsoDate(now());
+    if (shouldSkipFreshTdcc(manifest, { force, explicitTdcc, today })) {
+      results.push({ key: 'tdcc', ok: true, status: 'skip', date: manifest.datasets.tdcc.latestWeek });
+      console.log(`[skip] tdcc: latestWeek ${manifest.datasets.tdcc.latestWeek} is within 7 days of ${today}`);
+    } else {
+      const loaded = await loadEndpoint(tdccEndpoint, fetcher);
+      if (!loaded.ok) {
+        setDatasetError(manifest, 'tdcc', loaded.error);
+        results.push({ key: 'tdcc', ok: false, error: loaded.error });
+        console.log(`[fail] tdcc: ${loaded.error}`);
+      } else {
+        const writeResult = await writeTdccRawIfChanged(rootDir, loaded.date, loaded.body, { force });
+        const storedWeeks = await storedWeeksForTdcc(rootDir);
+        setDatasetSuccess(manifest, 'tdcc', storedWeeks);
+        results.push({ key: 'tdcc', ok: true, status: writeResult.status, date: loaded.date });
+        console.log(`[${writeResult.status}] tdcc: ${loaded.date}`);
+      }
+    }
+  }
+
   refreshLatestTradingDate(manifest);
   const changedDates = new Set(results.filter((result) => ['write', 'revise', 'forced'].includes(result.status)).map((result) => result.date));
   let newManifestString = stableManifestString(manifest);
@@ -245,7 +337,7 @@ export async function runSnapshot({
     await writeFileEnsured(manifestPath, newManifestString);
   }
   const successful = results.filter((result) => result.ok).length;
-  const exitCode = (anchorsFailed === markets.length || successful === 0) ? 1 : 0;
+  const exitCode = ((markets.length > 0 && anchorsFailed === markets.length) || successful === 0) ? 1 : 0;
   const summary = {
     changed: newManifestString !== oldManifestString || changedDates.size > 0,
     commitMessage: commitMessage(results, changedDates),

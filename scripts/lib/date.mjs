@@ -55,3 +55,23 @@ export function maxIsoDate(dates) {
   const values = dates.filter(Boolean).sort();
   return values.length ? values.at(-1) : null;
 }
+
+export function taipeiIsoDate(now) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Taipei',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+export function daysBetweenIsoDates(fromDate, toDate) {
+  if (!ISO_DATE_RE.test(fromDate) || !ISO_DATE_RE.test(toDate)) {
+    throw new Error(`invalid ISO date range: ${fromDate}..${toDate}`);
+  }
+  const from = Date.UTC(Number(fromDate.slice(0, 4)), Number(fromDate.slice(5, 7)) - 1, Number(fromDate.slice(8, 10)));
+  const to = Date.UTC(Number(toDate.slice(0, 4)), Number(toDate.slice(5, 7)) - 1, Number(toDate.slice(8, 10)));
+  return Math.floor((to - from) / 86_400_000);
+}
