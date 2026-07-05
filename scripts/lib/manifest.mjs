@@ -28,6 +28,9 @@ export function normalizeManifest(input) {
     paths: {
       raw: 'data/raw/{source_dataset}/{yyyy}/{date}.json',
       rawTdcc: 'data/raw/tdcc/{yyyy}/{date}.csv.gz',
+      symbol: 'data/derived/symbols/{p2}/{id}.json',
+      tdcc: 'data/derived/tdcc/{p2}/{id}.json',
+      market: 'data/derived/market.json',
     },
     archives: [],
   };
