@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
+import { buildDerived } from '../scripts/build-derived.mjs';
+import { applyDailyDate } from '../scripts/lib/derived.mjs';
 import { runSnapshot } from '../scripts/run.mjs';
 
 function jsonBody(rows) {
@@ -16,7 +18,7 @@ function fixtureBodies(overrides = {}) {
     twse_stock_day_all: jsonBody([{ Date: '1150706', Code: '2330', Name: '台積電', TradeVolume: '1', ClosingPrice: '1' }]),
     twse_mi_margn: jsonBody([{ '股票代號': '2330', '股票名稱': '台積電', '融資買進': '1', '融資今日餘額': '1' }]),
     tpex_index: jsonBody([{ Date: '20260706', Open: '1', High: '1', Low: '1', Close: '1' }]),
-    tpex_mainboard_close: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '006201', CompanyName: '元大富櫃50', Close: '1' }]),
+    tpex_mainboard_close: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', Close: '1' }]),
     tpex_3insti: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', TotalDifference: '1' }]),
     tpex_margin: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '1' }]),
     tdcc: '資料日期,證券代號,持股分級,人數\n20260704,2330,1,1\n20260704,0050,2,3\n',
@@ -71,6 +73,122 @@ async function withTempDir(fn) {
 
 async function manifest(root) {
   return JSON.parse(await readFile(join(root, 'data', 'manifest.json'), 'utf8'));
+}
+
+async function readJson(root, path) {
+  return JSON.parse(await readFile(join(root, path), 'utf8'));
+}
+
+async function fileMap(dir, base = dir) {
+  const entries = await readdir(dir, { withFileTypes: true });
+  const result = {};
+  for (const entry of entries) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      Object.assign(result, await fileMap(path, base));
+    } else {
+      result[path.slice(base.length + 1)] = await readFile(path, 'utf8');
+    }
+  }
+  return result;
+}
+
+function tdccFixture(date = '20260704') {
+  return [
+    '資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%',
+    `${date},2330,1,100,10000,1.10`,
+    `${date},2330,2,50,20000,2.20`,
+    `${date},2330,3,25,30000,3.30`,
+    `${date},2330,12,5,400000,12.10`,
+    `${date},2330,13,4,300000,13.20`,
+    `${date},2330,14,3,200000,14.30`,
+    `${date},2330,15,2,1000000,15.40`,
+    `${date},2330,16,1,-1,-9.99`,
+    `${date},2330,17,200,2000000,100.00`,
+    `${date},123456,15,1,1000000,90.00`,
+    `${date},123456,17,1,1000000,100.00`,
+    `${date},2881A,1,1,100,1.00`,
+    '',
+  ].join('\n');
+}
+
+function derivedBodies(overrides = {}) {
+  return fixtureBodies({
+    twse_mi_index: jsonBody([
+      { '日期': '1150706', '指數': '寶島股價指數', '收盤指數': '1' },
+      { '日期': '1150706', '指數': '發行量加權股價指數', '收盤指數': '52227.97' },
+    ]),
+    twse_stock_day_all: jsonBody([
+      {
+        Date: '1150706',
+        Code: '2330',
+        Name: '台積電',
+        TradeVolume: '32,145,678',
+        TradeValue: '1',
+        OpeningPrice: '1080',
+        HighestPrice: '1090',
+        LowestPrice: '1075',
+        ClosingPrice: '1085',
+        Change: '+1',
+        Transaction: '45,210',
+      },
+      {
+        Date: '1150706',
+        Code: '123456',
+        Name: '排除六碼',
+        TradeVolume: '1',
+        TradeValue: '1',
+        OpeningPrice: '1',
+        HighestPrice: '1',
+        LowestPrice: '1',
+        ClosingPrice: '1',
+        Change: '0',
+        Transaction: '1',
+      },
+    ]),
+    twse_mi_margn: jsonBody([
+      { '股票代號': '2330', '股票名稱': '台積電', '融資買進': '1', '融資今日餘額': '9,577', '融券今日餘額': '' },
+      { '股票代號': '123456', '股票名稱': '排除六碼', '融資買進': '1', '融資今日餘額': '1', '融券今日餘額': '1' },
+    ]),
+    tpex_index: jsonBody([
+      { Date: '20260704', Open: '420', High: '430', Low: '410', Close: '425' },
+      { Date: '20260706', Open: '430', High: '440', Low: '429', Close: '431.23' },
+    ]),
+    tpex_mainboard_close: jsonBody([
+      {
+        Date: '1150706',
+        SecuritiesCompanyCode: '00679B',
+        CompanyName: '元大美債20年',
+        Close: '49.30',
+        Open: '48.30',
+        High: '49.37',
+        Low: '48.30',
+        TradingShares: '216,609',
+        TransactionNumber: '242',
+      },
+      {
+        Date: '1150706',
+        SecuritiesCompanyCode: '654321',
+        CompanyName: '排除上櫃六碼',
+        Close: '1',
+        Open: '1',
+        High: '1',
+        Low: '1',
+        TradingShares: '1',
+        TransactionNumber: '1',
+      },
+    ]),
+    tpex_3insti: jsonBody([
+      { Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', TotalDifference: '5,677,787' },
+      { Date: '1150706', SecuritiesCompanyCode: '654321', CompanyName: '排除上櫃六碼', TotalDifference: '1' },
+    ]),
+    tpex_margin: jsonBody([
+      { Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '5,949', ShortSaleBalance: '9' },
+      { Date: '1150706', SecuritiesCompanyCode: '654321', CompanyName: '排除上櫃六碼', MarginPurchaseBalance: '1', ShortSaleBalance: '1' },
+    ]),
+    tdcc: tdccFixture(),
+    ...overrides,
+  });
 }
 
 test('anchor date parse failure aborts that market and exits non-zero when both anchors fail', async () => {
@@ -137,6 +255,9 @@ test('first run writes raw paths and manifest contract with eight datasets', asy
     });
     assert.equal(m.paths.raw, 'data/raw/{source_dataset}/{yyyy}/{date}.json');
     assert.equal(m.paths.rawTdcc, 'data/raw/tdcc/{yyyy}/{date}.csv.gz');
+    assert.equal(m.paths.symbol, 'data/derived/symbols/{p2}/{id}.json');
+    assert.equal(m.paths.tdcc, 'data/derived/tdcc/{p2}/{id}.json');
+    assert.equal(m.paths.market, 'data/derived/market.json');
   });
 });
 
@@ -192,7 +313,7 @@ test('explicit tdcc run bypasses freshness skip and same content is byte-level n
     const rawAfter = await readFile(join(root, 'data', 'raw', 'tdcc', '2026', '2026-07-04.csv.gz'));
     assert.equal(summary.exitCode, 0);
     assert.equal(summary.results.find((result) => result.key === 'tdcc').status, 'same');
-    assert.ok(calls.some((call) => call.key === 'tdcc'));
+    assert.equal(calls.some((call) => call.key === 'tdcc'), true);
     assert.equal(after, before);
     assert.deepEqual(rawAfter, rawBefore);
   });
@@ -280,7 +401,7 @@ test('stale hash guard skips dataset and does not advance manifest', async () =>
       twse_mi_index: jsonBody([{ '日期': '1150703', '指數': '寶島股價指數', '收盤指數': '1' }]),
       twse_stock_day_all: jsonBody([{ Date: '1150703', Code: '2330', Name: '台積電', TradeVolume: '1', ClosingPrice: '1' }]),
       tpex_index: jsonBody([{ Date: '20260703', Open: '1', High: '1', Low: '1', Close: '1' }]),
-      tpex_mainboard_close: jsonBody([{ Date: '1150703', SecuritiesCompanyCode: '006201', CompanyName: '元大富櫃50', Close: '1' }]),
+      tpex_mainboard_close: jsonBody([{ Date: '1150703', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', Close: '1' }]),
       tpex_3insti: jsonBody([{ Date: '1150703', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', TotalDifference: '1' }]),
       tpex_margin: jsonBody([{ Date: '1150703', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '1' }]),
     });
@@ -307,5 +428,155 @@ test('different hash on existing date revises raw', async () => {
     assert.match(summary.commitMessage, /^revise: 2026-07-06/);
     const raw = await readFile(join(root, 'data', 'raw', 'twse', 'mi_index', '2026', '2026-07-06.json'), 'utf8');
     assert.equal(raw, revisedBodies.twse_mi_index);
+  });
+});
+
+test('derived daily files map fields, market series, and exclude pure six digit symbols', async () => {
+  await withTempDir(async (root) => {
+    const summary = await runSnapshot({ rootDir: root, fetcher: fetcherFor(derivedBodies()), now: () => new Date('2026-07-06T13:45:00Z') });
+    assert.equal(summary.exitCode, 0);
+
+    const twse = await readJson(root, 'data/derived/symbols/23/2330.json');
+    assert.deepEqual(twse, {
+      id: '2330',
+      name: '台積電',
+      market: 'twse',
+      updated: '2026-07-06',
+      cols: ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi'],
+      rows: [[20260706, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, null, null]],
+    });
+    const tpex = await readJson(root, 'data/derived/symbols/00/00679B.json');
+    assert.deepEqual(tpex.rows, [[20260706, 48.3, 49.37, 48.3, 49.3, 216609, 242, 5949, 9, 5677787]]);
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'symbols', '12', '123456.json')));
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'symbols', '65', '654321.json')));
+
+    const market = await readJson(root, 'data/derived/market.json');
+    assert.equal(market.updated, '2026-07-06');
+    assert.deepEqual(market.twse.index, { cols: ['d', 'c'], rows: [[20260706, 52227.97]] });
+    assert.deepEqual(market.tpex.index.rows, [
+      [20260704, 420, 430, 410, 425],
+      [20260706, 430, 440, 429, 431.23],
+    ]);
+    assert.deepEqual(market.twse.margin.rows, [[20260706, 9578, 1]]);
+    assert.deepEqual(market.tpex.margin.rows, [[20260706, 5950, 10]]);
+    assert.deepEqual(market.tpex.insti.rows, [[20260706, 5677788]]);
+  });
+});
+
+test('derived daily append is ascending and injectable window trims oldest row', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({ rootDir: root, fetcher: fetcherFor(derivedBodies()), now: () => new Date('2026-07-06T13:45:00Z') });
+    const day2 = derivedBodies({
+      twse_mi_index: jsonBody([{ '日期': '1150707', '指數': '發行量加權股價指數', '收盤指數': '2' }]),
+      twse_stock_day_all: jsonBody([{
+        Date: '1150707',
+        Code: '2330',
+        Name: '台積電',
+        TradeVolume: '2',
+        TradeValue: '1',
+        OpeningPrice: '2',
+        HighestPrice: '3',
+        LowestPrice: '1',
+        ClosingPrice: '2',
+        Change: '0',
+        Transaction: '2',
+      }]),
+      twse_mi_margn: jsonBody([{ '股票代號': '2330', '股票名稱': '台積電', '融資買進': '1', '融資今日餘額': '2', '融券今日餘額': '3' }]),
+      tpex_index: jsonBody([{ Date: '20260707', Open: '1', High: '1', Low: '1', Close: '1' }]),
+      tpex_mainboard_close: jsonBody([{ Date: '1150707', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', Close: '2', Open: '2', High: '2', Low: '2', TradingShares: '2', TransactionNumber: '2' }]),
+      tpex_3insti: jsonBody([{ Date: '1150707', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', TotalDifference: '2' }]),
+      tpex_margin: jsonBody([{ Date: '1150707', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '2', ShortSaleBalance: '2' }]),
+    });
+    await runSnapshot({ rootDir: root, fetcher: fetcherFor(day2), now: () => new Date('2026-07-07T13:45:00Z') });
+    let twse = await readJson(root, 'data/derived/symbols/23/2330.json');
+    assert.deepEqual(twse.rows.map((row) => row[0]), [20260706, 20260707]);
+
+    await applyDailyDate(root, '2026-07-06', { symbolWindow: 1 });
+    await applyDailyDate(root, '2026-07-07', { symbolWindow: 1 });
+    twse = await readJson(root, 'data/derived/symbols/23/2330.json');
+    assert.deepEqual(twse.rows.map((row) => row[0]), [20260707]);
+  });
+});
+
+test('derived same-day rerun is byte-level no-op and revise recomputes that date', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({ rootDir: root, fetcher: fetcherFor(derivedBodies()), now: () => new Date('2026-07-06T13:45:00Z') });
+    const before = await fileMap(join(root, 'data', 'derived'));
+    await runSnapshot({ rootDir: root, fetcher: fetcherFor(derivedBodies()), now: () => new Date('2026-07-06T14:45:00Z') });
+    assert.deepEqual(await fileMap(join(root, 'data', 'derived')), before);
+
+    const revised = derivedBodies({
+      twse_stock_day_all: jsonBody([{
+        Date: '1150706',
+        Code: '2330',
+        Name: '台積電',
+        TradeVolume: '32,145,678',
+        TradeValue: '1',
+        OpeningPrice: '1080',
+        HighestPrice: '1090',
+        LowestPrice: '1075',
+        ClosingPrice: '1099',
+        Change: '+1',
+        Transaction: '45,210',
+      }]),
+    });
+    await runSnapshot({ rootDir: root, fetcher: fetcherFor(revised), now: () => new Date('2026-07-06T15:45:00Z') });
+    const twse = await readJson(root, 'data/derived/symbols/23/2330.json');
+    assert.equal(twse.rows[0][4], 1099);
+  });
+});
+
+test('derived margin failure leaves nulls and later margin raw converges same date row', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(derivedBodies(), { tpex_margin: { status: 503 } }),
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    let tpex = await readJson(root, 'data/derived/symbols/00/00679B.json');
+    assert.deepEqual(tpex.rows[0].slice(7, 9), [null, null]);
+
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(derivedBodies()),
+      datasets: ['tpex_margin'],
+      now: () => new Date('2026-07-06T14:45:00Z'),
+    });
+    tpex = await readJson(root, 'data/derived/symbols/00/00679B.json');
+    assert.deepEqual(tpex.rows[0].slice(7, 9), [5949, 9]);
+  });
+});
+
+test('derived tdcc computes indicators, excludes six digit symbols, and skips missing total row', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(derivedBodies()),
+      datasets: ['tdcc'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    const tdcc = await readJson(root, 'data/derived/tdcc/23/2330.json');
+    assert.deepEqual(tdcc, {
+      id: '2330',
+      updated: '2026-07-04',
+      cols: ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'],
+      rows: [[20260704, 15.4, 55, 6.6, 200, 10000]],
+    });
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'tdcc', '12', '123456.json')));
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'tdcc', '28', '2881A.json')));
+  });
+});
+
+test('build-derived rebuild matches incremental output and repeated rebuild is byte-level stable', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({ rootDir: root, fetcher: fetcherFor(derivedBodies()), now: () => new Date('2026-07-06T13:45:00Z') });
+    const incremental = await fileMap(join(root, 'data', 'derived'));
+    await rm(join(root, 'data', 'derived'), { recursive: true, force: true });
+    const summary = await buildDerived({ rootDir: root });
+    assert.ok(summary.files > 0);
+    const rebuilt = await fileMap(join(root, 'data', 'derived'));
+    assert.deepEqual(rebuilt, incremental);
+    await buildDerived({ rootDir: root });
+    assert.deepEqual(await fileMap(join(root, 'data', 'derived')), rebuilt);
   });
 });

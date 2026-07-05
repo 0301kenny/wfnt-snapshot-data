@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { ENDPOINTS, dateFromRows, endpointByKey, validateRows, validateTdccCsv } from './endpoints.mjs';
 import { daysBetweenIsoDates, taipeiIsoDate, yyyyOf } from './lib/date.mjs';
+import { applyDailyDate, applyTdccWeek } from './lib/derived.mjs';
 import { sha256Hex } from './lib/hash.mjs';
 import { listCsvGzDates, listJsonDates, readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
 import {
@@ -235,13 +236,13 @@ export async function runSnapshot({
   now = () => new Date(),
 } = {}) {
   const selected = selectedEndpointKeys(datasets);
+  const explicitTdcc = datasets?.includes('tdcc') ?? false;
   const manifestPath = join(rootDir, 'data', 'manifest.json');
   const oldManifestString = stableManifestString(normalizeManifest(await readJsonIfExists(manifestPath, {})));
   const manifest = normalizeManifest(JSON.parse(oldManifestString));
   const endpointsToWrite = ENDPOINTS.filter((endpoint) => selected.has(endpoint.key));
   const dailyEndpointsToWrite = endpointsToWrite.filter((endpoint) => endpoint.market);
   const tdccEndpoint = endpointsToWrite.find((endpoint) => endpoint.key === 'tdcc') ?? null;
-  const explicitTdcc = datasets?.includes('tdcc') ?? false;
   const markets = [...new Set(dailyEndpointsToWrite.map((endpoint) => endpoint.market))];
   const anchors = new Map();
   const results = [];
@@ -324,6 +325,31 @@ export async function runSnapshot({
         results.push({ key: 'tdcc', ok: true, status: writeResult.status, date: loaded.date });
         console.log(`[${writeResult.status}] tdcc: ${loaded.date}`);
       }
+    }
+  }
+
+  const changedDailyDatesForDerived = new Set(
+    results
+      .filter((result) => result.market && ['write', 'revise', 'forced'].includes(result.status))
+      .map((result) => result.date),
+  );
+  const changedTdccWeeksForDerived = results
+    .filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status))
+    .map((result) => result.date);
+  for (const date of [...changedDailyDatesForDerived].sort()) {
+    try {
+      const derived = await applyDailyDate(rootDir, date);
+      console.log(`[derived] daily ${date}: symbols=${derived.symbols} market=${derived.market ? 'write' : 'same'}`);
+    } catch (error) {
+      console.error(`[error] derived daily ${date}: ${error?.stack ?? error}`);
+    }
+  }
+  for (const date of changedTdccWeeksForDerived.sort()) {
+    try {
+      const derived = await applyTdccWeek(rootDir, date);
+      console.log(`[derived] tdcc ${date}: files=${derived.tdcc}`);
+    } catch (error) {
+      console.error(`[error] derived tdcc ${date}: ${error?.stack ?? error}`);
     }
   }
 
