@@ -79,8 +79,8 @@ data/derived/market.json
   "name": "台積電",
   "market": "twse",
   "updated": "2026-07-03",
-  "cols": ["d", "o", "h", "l", "c", "v", "t", "mb", "ms", "fi"],
-  "rows": [[20260703, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, 120, null]]
+  "cols": ["d", "o", "h", "l", "c", "v", "t", "mb", "ms", "fi", "ff", "ft", "fd"],
+  "rows": [[20260703, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, 120, null, null, null, null]]
 }
 ```
 
@@ -89,6 +89,9 @@ data/derived/market.json
 - `v`:成交股數;`t`:成交筆數。
 - `mb/ms`:融資/融券今日餘額,單位張。
 - `fi`:三大法人合計買賣超,單位股。TWSE 個股法人欄位不存在,固定 `null`;TPEX 取 `TotalDifference`。
+- `ff`:外資(含陸資)買賣超,單位股。僅 TPEX 填值,TWSE 固定 `null`;來源欄位以去空白後的 `ForeignInvestorsIncludeMainlandAreaInvestors-Difference` 縮寫版為準,不取含 `(Foreign Dealers excluded)` 的長版。
+- `ft`:投信買賣超,單位股。僅 TPEX 填值,TWSE 固定 `null`;缺欄時為 `null`。
+- `fd`:自營商買賣超,單位股。僅 TPEX 填值,TWSE 固定 `null`;缺欄時為 `null`。
 - Rows 依 `d` 升冪,rolling window 預設 480 筆交易日。
 
 ### TDCC weekly series

@@ -12,6 +12,12 @@ function jsonBody(rows) {
   return JSON.stringify(rows);
 }
 
+function rawJsonArray(rows) {
+  return `[
+${rows.join(',\n')}
+]`;
+}
+
 function fixtureBodies(overrides = {}) {
   return {
     twse_mi_index: jsonBody([{ '日期': '1150706', '指數': '寶島股價指數', '收盤指數': '1' }]),
@@ -178,9 +184,9 @@ function derivedBodies(overrides = {}) {
         TransactionNumber: '1',
       },
     ]),
-    tpex_3insti: jsonBody([
-      { Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', TotalDifference: '5,677,787' },
-      { Date: '1150706', SecuritiesCompanyCode: '654321', CompanyName: '排除上櫃六碼', TotalDifference: '1' },
+    tpex_3insti: rawJsonArray([
+      '{"Date":"1150706","SecuritiesCompanyCode":"00679B","CompanyName":"元大美債20年","Foreign Investors include Mainland Area Investors (Foreign Dealers excluded)-Difference":"999","ForeignInvestorsInclude MainlandAreaInvestors-Difference":"111","SecuritiesInvestmentTrustCompanies-Difference":"222","Dealers -Difference":"333","Dealers-Difference":"444","TotalDifference":"5,677,787"}',
+      '{"Date":"1150706","SecuritiesCompanyCode":"654321","CompanyName":"排除上櫃六碼","TotalDifference":"1"}',
     ]),
     tpex_margin: jsonBody([
       { Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '5,949', ShortSaleBalance: '9' },
@@ -442,11 +448,18 @@ test('derived daily files map fields, market series, and exclude pure six digit 
       name: '台積電',
       market: 'twse',
       updated: '2026-07-06',
-      cols: ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi'],
-      rows: [[20260706, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, null, null]],
+      cols: ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'],
+      rows: [[20260706, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, null, null, null, null, null]],
     });
     const tpex = await readJson(root, 'data/derived/symbols/00/00679B.json');
-    assert.deepEqual(tpex.rows, [[20260706, 48.3, 49.37, 48.3, 49.3, 216609, 242, 5949, 9, 5677787]]);
+    assert.deepEqual(tpex, {
+      id: '00679B',
+      name: '元大美債20年',
+      market: 'tpex',
+      updated: '2026-07-06',
+      cols: ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'],
+      rows: [[20260706, 48.3, 49.37, 48.3, 49.3, 216609, 242, 5949, 9, 5677787, 111, 222, 333]],
+    });
     await assert.rejects(readFile(join(root, 'data', 'derived', 'symbols', '12', '123456.json')));
     await assert.rejects(readFile(join(root, 'data', 'derived', 'symbols', '65', '654321.json')));
 
@@ -460,6 +473,41 @@ test('derived daily files map fields, market series, and exclude pure six digit 
     assert.deepEqual(market.twse.margin.rows, [[20260706, 9578, 1]]);
     assert.deepEqual(market.tpex.margin.rows, [[20260706, 5950, 10]]);
     assert.deepEqual(market.tpex.insti.rows, [[20260706, 5677788]]);
+  });
+});
+
+test('derived tpex institution columns normalize whitespace, keep first collision, and leave missing data null', async () => {
+  await withTempDir(async (root) => {
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        tpex_mainboard_close: jsonBody([
+          { Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', Close: '1', Open: '1', High: '1', Low: '1', TradingShares: '1', TransactionNumber: '1' },
+          { Date: '1150706', SecuritiesCompanyCode: '00700B', CompanyName: '七百B', Close: '1', Open: '1', High: '1', Low: '1', TradingShares: '1', TransactionNumber: '1' },
+          { Date: '1150706', SecuritiesCompanyCode: '00800B', CompanyName: '八百B', Close: '1', Open: '1', High: '1', Low: '1', TradingShares: '1', TransactionNumber: '1' },
+        ]),
+        tpex_3insti: rawJsonArray([
+          '{"Date":"1150706","SecuritiesCompanyCode":"00679B","CompanyName":"元大美債20年","Foreign Investors include Mainland Area Investors (Foreign Dealers excluded)-Difference":"999","ForeignInvestorsInclude MainlandAreaInvestors-Difference":"111","SecuritiesInvestmentTrustCompanies-Difference":"222","Dealers -Difference":"333","Dealers-Difference":"444","TotalDifference":"5677787"}',
+          '{"Date":"1150706","SecuritiesCompanyCode":"00800B","CompanyName":"八百B","ForeignInvestorsInclude MainlandAreaInvestors-Difference":"88","Dealers-Difference":"99","TotalDifference":"777"}',
+        ]),
+        tpex_margin: jsonBody([
+          { Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '1', ShortSaleBalance: '2' },
+          { Date: '1150706', SecuritiesCompanyCode: '00700B', CompanyName: '七百B', MarginPurchaseBalance: '3', ShortSaleBalance: '4' },
+          { Date: '1150706', SecuritiesCompanyCode: '00800B', CompanyName: '八百B', MarginPurchaseBalance: '5', ShortSaleBalance: '6' },
+        ]),
+      })),
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    assert.equal(summary.exitCode, 0);
+
+    const withAll = await readJson(root, 'data/derived/symbols/00/00679B.json');
+    assert.deepEqual(withAll.rows[0].slice(9), [5677787, 111, 222, 333]);
+
+    const missingRow = await readJson(root, 'data/derived/symbols/00/00700B.json');
+    assert.deepEqual(missingRow.rows[0].slice(7, 13), [3, 4, null, null, null, null]);
+
+    const missingField = await readJson(root, 'data/derived/symbols/00/00800B.json');
+    assert.deepEqual(missingField.rows[0].slice(9), [777, 88, null, 99]);
   });
 });
 

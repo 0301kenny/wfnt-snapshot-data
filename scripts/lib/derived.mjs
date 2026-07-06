@@ -7,8 +7,13 @@ import { readJsonIfExists, writeFileEnsured } from './io.mjs';
 export const DEFAULT_SYMBOL_WINDOW = 480;
 export const DEFAULT_TDCC_WINDOW = 64;
 
-const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi'];
+const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'];
 const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
+const TPEX_INSTI_FIELDS = {
+  ff: 'ForeignInvestorsIncludeMainlandAreaInvestors-Difference',
+  ft: 'SecuritiesInvestmentTrustCompanies-Difference',
+  fd: 'Dealers-Difference',
+};
 const MARKET_TEMPLATE = {
   updated: null,
   twse: {
@@ -62,6 +67,15 @@ async function readJsonRaw(rootDir, sourceDataset, date) {
   return readJsonIfExists(join(rootDir, 'data', 'raw', sourceDataset, yyyyOf(date), `${date}.json`), null);
 }
 
+async function readTextRaw(rootDir, sourceDataset, date) {
+  try {
+    return await readFile(join(rootDir, 'data', 'raw', sourceDataset, yyyyOf(date), `${date}.json`), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 async function readExistingJson(path, fallback) {
   return readJsonIfExists(path, fallback);
 }
@@ -85,6 +99,135 @@ async function writeDerivedJson(path, value) {
 function updatedFromRows(rows) {
   if (!rows.length) return null;
   return intToIso(rows.at(-1)[0]);
+}
+
+function normalizeTpexInstiKey(key) {
+  return String(key ?? '').replaceAll(/\s+/g, '');
+}
+
+function skipJsonWhitespace(text, index) {
+  while (index < text.length && /\s/.test(text[index])) index += 1;
+  return index;
+}
+
+function parseJsonStringLiteral(text, index) {
+  if (text[index] !== '"') throw new Error('invalid JSON string');
+  let escaped = false;
+  for (let cursor = index + 1; cursor < text.length; cursor += 1) {
+    const char = text[cursor];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      return { value: JSON.parse(text.slice(index, cursor + 1)), next: cursor + 1 };
+    }
+  }
+  throw new Error('unterminated JSON string');
+}
+
+function scanJsonValue(text, index) {
+  index = skipJsonWhitespace(text, index);
+  const start = index;
+  const initial = text[index];
+  if (initial === '"') {
+    return parseJsonStringLiteral(text, index);
+  }
+  if (initial === '{' || initial === '[') {
+    const stack = [initial === '{' ? '}' : ']'];
+    let escaped = false;
+    let quoted = false;
+    for (let cursor = index + 1; cursor < text.length; cursor += 1) {
+      const char = text[cursor];
+      if (quoted) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === '\\') {
+          escaped = true;
+        } else if (char === '"') {
+          quoted = false;
+        }
+        continue;
+      }
+      if (char === '"') {
+        quoted = true;
+        continue;
+      }
+      if (char === '{') {
+        stack.push('}');
+        continue;
+      }
+      if (char === '[') {
+        stack.push(']');
+        continue;
+      }
+      if (char === stack.at(-1)) {
+        stack.pop();
+        if (stack.length === 0) {
+          return { value: JSON.parse(text.slice(start, cursor + 1)), next: cursor + 1 };
+        }
+      }
+    }
+    throw new Error('unterminated JSON value');
+  }
+  let cursor = index;
+  while (cursor < text.length && !/[\s,\]}]/.test(text[cursor])) cursor += 1;
+  return { value: JSON.parse(text.slice(start, cursor)), next: cursor };
+}
+
+function parseTpexInstiRows(text) {
+  const source = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+  let index = skipJsonWhitespace(source, 0);
+  if (source[index] !== '[') throw new Error('invalid 3insti JSON: expected array');
+  index += 1;
+  const rows = [];
+  index = skipJsonWhitespace(source, index);
+  if (source[index] === ']') return rows;
+  while (index < source.length) {
+    index = skipJsonWhitespace(source, index);
+    if (source[index] !== '{') throw new Error('invalid 3insti JSON: expected object');
+    index += 1;
+    const row = Object.create(null);
+    index = skipJsonWhitespace(source, index);
+    if (source[index] === '}') {
+      rows.push(row);
+      index += 1;
+    } else {
+      while (index < source.length) {
+        const key = parseJsonStringLiteral(source, index);
+        index = skipJsonWhitespace(source, key.next);
+        if (source[index] !== ':') throw new Error('invalid 3insti JSON: expected colon');
+        index = skipJsonWhitespace(source, index + 1);
+        const value = scanJsonValue(source, index);
+        const normalizedKey = normalizeTpexInstiKey(key.value);
+        if (!Object.hasOwn(row, normalizedKey)) row[normalizedKey] = value.value;
+        index = skipJsonWhitespace(source, value.next);
+        if (source[index] === ',') {
+          index = skipJsonWhitespace(source, index + 1);
+          continue;
+        }
+        if (source[index] === '}') {
+          rows.push(row);
+          index += 1;
+          break;
+        }
+        throw new Error('invalid 3insti JSON: expected comma or object end');
+      }
+    }
+    index = skipJsonWhitespace(source, index);
+    if (source[index] === ',') {
+      index = skipJsonWhitespace(source, index + 1);
+      continue;
+    }
+    if (source[index] === ']') return rows;
+    if (index >= source.length) break;
+    throw new Error('invalid 3insti JSON: expected array end');
+  }
+  throw new Error('invalid 3insti JSON: unterminated array');
 }
 
 function upsertRows(rows, nextRow, window) {
@@ -211,7 +354,7 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     twseMargin,
     tpexIndex,
     tpexClose,
-    tpexInsti,
+    tpexInstiText,
     tpexMargin,
   ] = await Promise.all([
     readJsonRaw(rootDir, 'twse/mi_index', isoDate),
@@ -219,9 +362,10 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     readJsonRaw(rootDir, 'twse/mi_margn', isoDate),
     readJsonRaw(rootDir, 'tpex/index', isoDate),
     readJsonRaw(rootDir, 'tpex/mainboard_close', isoDate),
-    readJsonRaw(rootDir, 'tpex/3insti', isoDate),
+    readTextRaw(rootDir, 'tpex/3insti', isoDate),
     readJsonRaw(rootDir, 'tpex/margin', isoDate),
   ]);
+  const tpexInsti = tpexInstiText ? parseTpexInstiRows(tpexInstiText) : null;
 
   const twseMarginById = mapBy(twseMargin, '股票代號');
   const tpexMarginById = mapBy(tpexMargin, 'SecuritiesCompanyCode');
@@ -247,6 +391,9 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
       compactNumber(row.Transaction),
       mb,
       ms,
+      null,
+      null,
+      null,
       null,
     ], symbolWindow);
     if (didWrite) written.symbols += 1;
@@ -276,6 +423,9 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
       mb,
       ms,
       compactNumber(insti?.TotalDifference),
+      compactNumber(insti?.[TPEX_INSTI_FIELDS.ff]),
+      compactNumber(insti?.[TPEX_INSTI_FIELDS.ft]),
+      compactNumber(insti?.[TPEX_INSTI_FIELDS.fd]),
     ], symbolWindow);
     if (didWrite) written.symbols += 1;
   }
