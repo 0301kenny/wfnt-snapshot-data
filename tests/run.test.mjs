@@ -645,6 +645,7 @@ test('bwibbu raw produces valuation fundamentals, nulls invalid numbers, and exc
     const bodies = fixtureBodies({
       twse_bwibbu_all: jsonBody([
         { Date: '1150706', Code: '2330', Name: '台積電', PEratio: '25.1', PBratio: 'bad', DividendYield: '--' },
+        { Date: '1150706', Code: '2317', Name: '鴻海', PEratio: '12', PBratio: '2', DividendYield: '3' },
         { Date: '1150706', Code: '123456', Name: '排除六碼', PEratio: '1', PBratio: '1', DividendYield: '1' },
       ]),
     });
@@ -668,12 +669,34 @@ test('bwibbu raw produces valuation fundamentals, nulls invalid numbers, and exc
       revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] },
     });
     await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '12', '123456.json')));
+
+    const revised = fixtureBodies({
+      twse_bwibbu_all: jsonBody([
+        { Date: '1150706', Code: '2330', Name: '台積電', PEratio: '26', PBratio: '5', DividendYield: '2' },
+      ]),
+    });
+    const revisedSummary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(revised),
+      datasets: ['twse_bwibbu_all'],
+      now: () => new Date('2026-07-06T14:45:00Z'),
+    });
+    assert.equal(revisedSummary.results.find((result) => result.key === 'twse_bwibbu_all').status, 'revise');
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '23', '2317.json')));
+    const incremental = await fileMap(join(root, 'data', 'derived'));
+    await buildDerived({ rootDir: root });
+    assert.deepEqual(await fileMap(join(root, 'data', 'derived')), incremental);
   });
 });
 
 test('monthly revenue writes, revises, no-ops, and advances month manifest deterministically', async () => {
   await withTempDir(async (root) => {
-    const firstBodies = fixtureBodies();
+    const firstBodies = fixtureBodies({
+      twse_monthly_revenue: jsonBody([
+        { '資料年月': '11506', '公司代號': '2330', '公司名稱': '台積電', '營業收入-當月營收': '123456789', '營業收入-去年同月增減(%)': '12.3', '營業收入-上月比較增減(%)': '-1.2' },
+        { '資料年月': '11506', '公司代號': '2317', '公司名稱': '鴻海', '營業收入-當月營收': '500', '營業收入-去年同月增減(%)': '5', '營業收入-上月比較增減(%)': '6' },
+      ]),
+    });
     let summary = await runSnapshot({
       rootDir: root,
       fetcher: fetcherFor(firstBodies),
@@ -710,6 +733,10 @@ test('monthly revenue writes, revises, no-ops, and advances month manifest deter
       revised.twse_monthly_revenue,
     );
     assert.deepEqual((await readJson(root, 'data/derived/fundamentals/23/2330.json')).revenue.rows, [[202606, 999, 1, 2]]);
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '23', '2317.json')));
+    const incremental = await fileMap(join(root, 'data', 'derived'));
+    await buildDerived({ rootDir: root });
+    assert.deepEqual(await fileMap(join(root, 'data', 'derived')), incremental);
 
     const nextMonth = fixtureBodies({
       twse_monthly_revenue: jsonBody([{ '資料年月': '11507', '公司代號': '2330', '公司名稱': '台積電', '營業收入-當月營收': '1000', '營業收入-去年同月增減(%)': '3', '營業收入-上月比較增減(%)': '4' }]),
@@ -751,5 +778,60 @@ test('tpex revenue creates empty valuation, maps invalid numbers to null, and ex
       revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [[202606, 543210, null, null]] },
     });
     await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '12', '123456.json')));
+  });
+});
+
+test('monthly revenue resolves same id and month collision in favor of twse rows', async () => {
+  await withTempDir(async (root) => {
+    const bodies = fixtureBodies({
+      twse_monthly_revenue: jsonBody([
+        { '資料年月': '11506', '公司代號': '6488', '公司名稱': '上市優先', '營業收入-當月營收': '111', '營業收入-去年同月增減(%)': '1', '營業收入-上月比較增減(%)': '2' },
+      ]),
+      tpex_monthly_revenue: jsonBody([
+        { '資料年月': '11506', '公司代號': '6488', '公司名稱': '上櫃候選', '營業收入-當月營收': '999', '營業收入-去年同月增減(%)': '9', '營業收入-上月比較增減(%)': '8' },
+      ]),
+    });
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(bodies),
+      datasets: ['twse_monthly_revenue', 'tpex_monthly_revenue'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    const fundamental = await readJson(root, 'data/derived/fundamentals/64/6488.json');
+    assert.equal(fundamental.name, '上市優先');
+    assert.equal(fundamental.market, 'twse');
+    assert.deepEqual(fundamental.revenue.rows, [[202606, 111, 1, 2]]);
+  });
+});
+
+test('monthly revenue warns and deterministically drops rows outside the raw month key', async () => {
+  await withTempDir(async (root) => {
+    const bodies = fixtureBodies({
+      twse_monthly_revenue: jsonBody([
+        { '資料年月': '11506', '公司代號': '2330', '公司名稱': '台積電', '營業收入-當月營收': '100' },
+        { '資料年月': '11505', '公司代號': '2317', '公司名稱': '鴻海', '營業收入-當月營收': '200' },
+        { '資料年月': 'bad', '公司代號': '2303', '公司名稱': '聯電', '營業收入-當月營收': '300' },
+      ]),
+    });
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      await runSnapshot({
+        rootDir: root,
+        fetcher: fetcherFor(bodies),
+        datasets: ['twse_monthly_revenue'],
+        now: () => new Date('2026-07-06T13:45:00Z'),
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.deepEqual(warnings, [
+      '[warn] derived: monthly revenue dataset=twse/monthly_revenue monthKey=2026-06 drops rowMonth=2026-05 count=1',
+      '[warn] derived: monthly revenue dataset=twse/monthly_revenue monthKey=2026-06 drops rowMonth=invalid count=1',
+    ]);
+    assert.deepEqual((await readJson(root, 'data/derived/fundamentals/23/2330.json')).revenue.rows, [[202606, 100, null, null]]);
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '23', '2317.json')));
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '23', '2303.json')));
   });
 });

@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { parseGregorianDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
@@ -319,6 +319,56 @@ async function upsertFundamental(rootDir, item, kind, row, window) {
   return writeDerivedJson(path, next);
 }
 
+async function listFundamentalPaths(rootDir) {
+  const dir = join(rootDir, 'data', 'derived', 'fundamentals');
+  try {
+    const buckets = await readdir(dir, { withFileTypes: true });
+    const paths = [];
+    for (const bucket of buckets) {
+      if (!bucket.isDirectory()) continue;
+      const files = await readdir(join(dir, bucket.name), { withFileTypes: true });
+      for (const file of files) {
+        if (file.isFile() && file.name.endsWith('.json')) paths.push(join(dir, bucket.name, file.name));
+      }
+    }
+    return paths.sort();
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds) {
+  let written = 0;
+  for (const path of await listFundamentalPaths(rootDir)) {
+    const current = await readExistingJson(path, null);
+    if (!current || presentIds.has(String(current.id))) continue;
+    const valuationRows = current.valuation?.rows ?? [];
+    const revenueRows = current.revenue?.rows ?? [];
+    const currentRows = kind === 'valuation' ? valuationRows : revenueRows;
+    if (!currentRows.some((row) => row[0] === key)) continue;
+    const nextValuationRows = kind === 'valuation'
+      ? valuationRows.filter((row) => row[0] !== key)
+      : valuationRows;
+    const nextRevenueRows = kind === 'revenue'
+      ? revenueRows.filter((row) => row[0] !== key)
+      : revenueRows;
+    if (nextValuationRows.length === 0 && nextRevenueRows.length === 0) {
+      await rm(path);
+      written += 1;
+      continue;
+    }
+    const next = {
+      ...current,
+      updated: fundamentalsUpdated(nextValuationRows, nextRevenueRows),
+      valuation: { cols: VALUATION_COLS, rows: nextValuationRows },
+      revenue: { cols: REVENUE_COLS, rows: nextRevenueRows },
+    };
+    if (await writeDerivedJson(path, next)) written += 1;
+  }
+  return written;
+}
+
 function normalizeMarket(input) {
   return {
     updated: input?.updated ?? null,
@@ -479,9 +529,13 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     if (didWrite) written.symbols += 1;
   }
 
+  const valuationById = new Map();
   for (const row of twseValuation ?? []) {
     const id = String(row?.Code ?? '').trim();
     if (!isDerivedSymbolId(id)) continue;
+    valuationById.set(id, row);
+  }
+  for (const [id, row] of [...valuationById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const didWrite = await upsertFundamental(rootDir, {
       id,
       name: row.Name ?? '',
@@ -493,6 +547,9 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
       compactNumber(row.DividendYield),
     ], DEFAULT_VALUATION_WINDOW);
     if (didWrite) written.fundamentals += 1;
+  }
+  if (twseValuation !== null) {
+    written.fundamentals += await reconcileFundamentalPeriod(rootDir, 'valuation', ymd, new Set(valuationById.keys()));
   }
 
   const marketPath = join(rootDir, 'data', 'derived', 'market.json');
@@ -532,28 +589,42 @@ export async function applyMonthlyRevenue(rootDir, monthKey, { revenueWindow = D
     { sourceDataset: 'twse/monthly_revenue', market: 'twse' },
     { sourceDataset: 'tpex/monthly_revenue', market: 'tpex' },
   ];
-  let written = 0;
+  const revenueById = new Map();
   for (const source of sources) {
     const rows = await readJsonIfExists(
       join(rootDir, 'data', 'raw', source.sourceDataset, monthKey.slice(0, 4), `${monthKey}.json`),
       null,
     );
+    const droppedByMonth = new Map();
     for (const row of rows ?? []) {
-      if (parseRocMonth(row?.['資料年月']) !== monthKey) continue;
+      const rowMonth = parseRocMonth(row?.['資料年月']);
+      if (rowMonth !== monthKey) {
+        const label = rowMonth ?? 'invalid';
+        droppedByMonth.set(label, (droppedByMonth.get(label) ?? 0) + 1);
+        continue;
+      }
       const id = String(row?.['公司代號'] ?? '').trim();
       if (!isDerivedSymbolId(id)) continue;
-      const didWrite = await upsertFundamental(rootDir, {
-        id,
-        name: row['公司名稱'] ?? '',
-        market: source.market,
-      }, 'revenue', [
+      const current = revenueById.get(id);
+      if (!current || source.market === 'twse') revenueById.set(id, { source, row });
+    }
+    for (const [rowMonth, count] of [...droppedByMonth.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      console.warn(`[warn] derived: monthly revenue dataset=${source.sourceDataset} monthKey=${monthKey} drops rowMonth=${rowMonth} count=${count}`);
+    }
+  }
+  let written = await reconcileFundamentalPeriod(rootDir, 'revenue', month, new Set(revenueById.keys()));
+  for (const [id, { source, row }] of [...revenueById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const didWrite = await upsertFundamental(rootDir, {
+      id,
+      name: row['公司名稱'] ?? '',
+      market: source.market,
+    }, 'revenue', [
         month,
         compactNumber(row['營業收入-當月營收']),
         compactNumber(row['營業收入-去年同月增減(%)']),
         compactNumber(row['營業收入-上月比較增減(%)']),
       ], revenueWindow);
-      if (didWrite) written += 1;
-    }
+    if (didWrite) written += 1;
   }
   return { fundamentals: written };
 }

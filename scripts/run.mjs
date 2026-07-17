@@ -456,16 +456,28 @@ export async function runSnapshot({
     .filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status))
     .map((result) => result.date);
   for (const date of [...changedDailyDatesForDerived].sort()) {
-    const derived = await applyDailyDate(rootDir, date);
-    console.log(`[derived] daily ${date}: symbols=${derived.symbols} fundamentals=${derived.fundamentals} market=${derived.market ? 'write' : 'same'}`);
+    try {
+      const derived = await applyDailyDate(rootDir, date);
+      console.log(`[derived] daily ${date}: symbols=${derived.symbols} fundamentals=${derived.fundamentals} market=${derived.market ? 'write' : 'same'}`);
+    } catch (error) {
+      console.error(`[error] derived daily ${date}: ${error?.stack ?? error}`);
+    }
   }
   for (const month of [...changedMonthsForDerived].sort()) {
-    const derived = await applyMonthlyRevenue(rootDir, month);
-    console.log(`[derived] monthly ${month}: fundamentals=${derived.fundamentals}`);
+    try {
+      const derived = await applyMonthlyRevenue(rootDir, month);
+      console.log(`[derived] monthly ${month}: fundamentals=${derived.fundamentals}`);
+    } catch (error) {
+      console.error(`[error] derived monthly ${month}: ${error?.stack ?? error}`);
+    }
   }
   for (const date of changedTdccWeeksForDerived.sort()) {
-    const derived = await applyTdccWeek(rootDir, date);
-    console.log(`[derived] tdcc ${date}: files=${derived.tdcc}`);
+    try {
+      const derived = await applyTdccWeek(rootDir, date);
+      console.log(`[derived] tdcc ${date}: files=${derived.tdcc}`);
+    } catch (error) {
+      console.error(`[error] derived tdcc ${date}: ${error?.stack ?? error}`);
+    }
   }
 
   refreshLatestTradingDate(manifest);
