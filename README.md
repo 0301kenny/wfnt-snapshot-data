@@ -4,7 +4,7 @@ TW Stock Radar 的每日官方開放資料快照服務。
 
 - 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料——全部為官方公開的**盤後**資料,本 repo 只做每日留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。
-- `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 7 個日更端點,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
+- `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 8 個日更端點與 2 個月營收端點,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
 
 ## Daily snapshot
 
@@ -12,6 +12,7 @@ TW Stock Radar 的每日官方開放資料快照服務。
 
 - `twse_mi_index`
 - `twse_stock_day_all`
+- `twse_bwibbu_all` (`https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL`)
 - `twse_mi_margn`
 - `tpex_index`
 - `tpex_mainboard_close`
@@ -25,6 +26,34 @@ data/raw/{source_dataset}/{yyyy}/{date}.json
 ```
 
 Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、不過濾。`data/manifest.json` 只在資料或狀態實際變更時改寫;同日 no-op 重跑不得產生 diff。
+
+`twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日。
+
+## Monthly revenue snapshot
+
+月更資料集:
+
+- `twse_monthly_revenue` (`https://openapi.twse.com.tw/v1/opendata/t187ap05_L`)
+- `tpex_monthly_revenue` (`https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O`)
+
+每個平日場次都會抓取月營收,不作 freshness skip,因為同一申報月內官方內容可能陸續增加。兩者不參與市場 anchor,也不納入 `latestTradingDate`。月鍵取全列可解析 `資料年月` 的最大值,把民國 `yyyMM` 轉成西元 `YYYY-MM`;同一 raw 若夾帶其他月份或不可解析月份的列,derived 會記錄含 dataset、月鍵、列月份與筆數的 warning 並固定排除那些列,raw 權威檔仍保持官方位元組不變。
+
+Raw 路徑固定為:
+
+```text
+data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json
+```
+
+同月官方 body 位元組改變時覆寫同一檔並記為 `revise`;位元組相同時不寫檔。跨月則建立新檔。Manifest 條目使用月語意:
+
+```json
+{
+  "firstMonth": null,
+  "latestMonth": null,
+  "months": 0,
+  "ok": false
+}
+```
 
 ## TDCC weekly snapshot
 
@@ -64,10 +93,11 @@ Derived 代號分桶:
 ```text
 data/derived/symbols/{p2}/{id}.json
 data/derived/tdcc/{p2}/{id}.json
+data/derived/fundamentals/{p2}/{id}.json
 data/derived/market.json
 ```
 
-`{p2}` 是代號前 2 字元原樣,例如 `2330` -> `23`,`00400A` -> `00`。Symbols 與 TDCC derived 都排除純數字 6 碼代號 (`/^\d{6}$/`),其餘代號保留,包含 4 碼股票、特別股、ETF/ETN 等。Raw 不過濾。
+`{p2}` 是代號前 2 字元原樣,例如 `2330` -> `23`,`00400A` -> `00`。Symbols、TDCC 與 fundamentals derived 都排除純數字 6 碼代號 (`/^\d{6}$/`),其餘代號保留,包含 4 碼股票、特別股、ETF/ETN 等。Raw 不過濾。
 
 ### Symbol daily series
 
@@ -115,6 +145,27 @@ data/derived/market.json
 - `avgShares`:分級 17 股數除以人數,四捨五入整數;人數為 0 時為 `null`。
 - 分級 16 差異數調整不參與加總。缺分級 17 的證券會跳過。
 - Rows 依 `w` 升冪,rolling window 預設 64 週。
+
+### Fundamentals series
+
+`data/derived/fundamentals/{p2}/{id}.json`:
+
+```json
+{
+  "id": "2330",
+  "name": "台積電",
+  "market": "twse",
+  "updated": "2026-07-16",
+  "valuation": { "cols": ["d", "per", "pbr", "dy"], "rows": [[20260716, 25.1, 5.2, 1.8]] },
+  "revenue": { "cols": ["m", "rev", "yoy", "mom"], "rows": [[202606, 123456789, 12.3, -1.2]] }
+}
+```
+
+- `name` / `market`:來源列公司名稱與資料集市場。若同代號跨來源碰撞,TWSE metadata 優先;估值來源固定為 TWSE。
+- `updated`:valuation 最大 `d` 轉 ISO 日期與 revenue 最大 `m` 轉該月 1 日後,取兩者較新值;因此僅有月營收時例如 `202606` 為 `2026-06-01`。此規則不依執行時間,可確定性重建。
+- `d`:西元 `yyyymmdd` 整數;`per` / `pbr` / `dy` 分別是 `PEratio` / `PBratio` / `DividendYield`。估值只有 TWSE 官方端點,TPEX 個股 valuation rows 為空。Rolling window 480 筆。
+- `m`:西元 `yyyymm` 整數;`rev` 是 `營業收入-當月營收` 的千元原值,不換算;`yoy` / `mom` 分別是去年同月與上月比較增減百分比。Rolling window 36 筆。
+- 所有數值會移除千分位逗號後轉 Number;空字串、`--`、非有限數或不可解析值為 `null`。Rows 依 `d` / `m` 升冪並以同鍵 upsert。
 
 ### Market series
 
