@@ -22,11 +22,14 @@ function fixtureBodies(overrides = {}) {
   return {
     twse_mi_index: jsonBody([{ '日期': '1150706', '指數': '寶島股價指數', '收盤指數': '1' }]),
     twse_stock_day_all: jsonBody([{ Date: '1150706', Code: '2330', Name: '台積電', TradeVolume: '1', ClosingPrice: '1' }]),
+    twse_bwibbu_all: jsonBody([{ Date: '1150706', Code: '2330', Name: '台積電', PEratio: '25.1', PBratio: '5.2', DividendYield: '1.8' }]),
     twse_mi_margn: jsonBody([{ '股票代號': '2330', '股票名稱': '台積電', '融資買進': '1', '融資今日餘額': '1' }]),
     tpex_index: jsonBody([{ Date: '20260706', Open: '1', High: '1', Low: '1', Close: '1' }]),
     tpex_mainboard_close: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', Close: '1' }]),
     tpex_3insti: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', TotalDifference: '1' }]),
     tpex_margin: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '1' }]),
+    twse_monthly_revenue: jsonBody([{ '資料年月': '11506', '公司代號': '2330', '公司名稱': '台積電', '營業收入-當月營收': '123456789', '營業收入-去年同月增減(%)': '12.3', '營業收入-上月比較增減(%)': '-1.2' }]),
+    tpex_monthly_revenue: jsonBody([{ '資料年月': '11506', '公司代號': '6488', '公司名稱': '環球晶', '營業收入-當月營收': '543210', '營業收入-去年同月增減(%)': '4.5', '營業收入-上月比較增減(%)': '2.1' }]),
     tdcc: '資料日期,證券代號,持股分級,人數\n20260704,2330,1,1\n20260704,0050,2,3\n',
     ...overrides,
   };
@@ -35,11 +38,14 @@ function fixtureBodies(overrides = {}) {
 const urls = {
   twse_mi_index: 'https://openapi.twse.com.tw/v1/exchangeReport/MI_INDEX',
   twse_stock_day_all: 'https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL',
+  twse_bwibbu_all: 'https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL',
   twse_mi_margn: 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN',
   tpex_index: 'https://www.tpex.org.tw/openapi/v1/tpex_index',
   tpex_mainboard_close: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',
   tpex_3insti: 'https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading',
   tpex_margin: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance',
+  twse_monthly_revenue: 'https://openapi.twse.com.tw/v1/opendata/t187ap05_L',
+  tpex_monthly_revenue: 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O',
   tdcc: 'https://opendata.tdcc.com.tw/getOD.ashx?id=1-5',
 };
 
@@ -227,7 +233,7 @@ test('single endpoint failure records deterministic lastError and exits zero', a
   });
 });
 
-test('first run writes raw paths and manifest contract with eight datasets', async () => {
+test('first run writes raw paths and manifest contract with eleven datasets', async () => {
   await withTempDir(async (root) => {
     const calls = [];
     const bodies = fixtureBodies();
@@ -251,6 +257,9 @@ test('first run writes raw paths and manifest contract with eight datasets', asy
       'tpex_3insti',
       'tpex_margin',
       'tdcc',
+      'twse_bwibbu_all',
+      'twse_monthly_revenue',
+      'tpex_monthly_revenue',
     ]);
     assert.equal(m.datasets.tpex_3insti.ok, true);
     assert.deepEqual(m.datasets.tdcc, {
@@ -261,9 +270,11 @@ test('first run writes raw paths and manifest contract with eight datasets', asy
     });
     assert.equal(m.paths.raw, 'data/raw/{source_dataset}/{yyyy}/{date}.json');
     assert.equal(m.paths.rawTdcc, 'data/raw/tdcc/{yyyy}/{date}.csv.gz');
+    assert.equal(m.paths.rawMonthly, 'data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json');
     assert.equal(m.paths.symbol, 'data/derived/symbols/{p2}/{id}.json');
     assert.equal(m.paths.tdcc, 'data/derived/tdcc/{p2}/{id}.json');
     assert.equal(m.paths.market, 'data/derived/market.json');
+    assert.equal(m.paths.fundamentals, 'data/derived/fundamentals/{p2}/{id}.json');
   });
 });
 
@@ -626,5 +637,119 @@ test('build-derived rebuild matches incremental output and repeated rebuild is b
     assert.deepEqual(rebuilt, incremental);
     await buildDerived({ rootDir: root });
     assert.deepEqual(await fileMap(join(root, 'data', 'derived')), rebuilt);
+  });
+});
+
+test('bwibbu raw produces valuation fundamentals, nulls invalid numbers, and excludes pure six digit ids', async () => {
+  await withTempDir(async (root) => {
+    const bodies = fixtureBodies({
+      twse_bwibbu_all: jsonBody([
+        { Date: '1150706', Code: '2330', Name: '台積電', PEratio: '25.1', PBratio: 'bad', DividendYield: '--' },
+        { Date: '1150706', Code: '123456', Name: '排除六碼', PEratio: '1', PBratio: '1', DividendYield: '1' },
+      ]),
+    });
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(bodies),
+      datasets: ['twse_bwibbu_all'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    assert.equal(summary.exitCode, 0);
+    assert.equal(
+      await readFile(join(root, 'data', 'raw', 'twse', 'bwibbu_all', '2026', '2026-07-06.json'), 'utf8'),
+      bodies.twse_bwibbu_all,
+    );
+    assert.deepEqual(await readJson(root, 'data/derived/fundamentals/23/2330.json'), {
+      id: '2330',
+      name: '台積電',
+      market: 'twse',
+      updated: '2026-07-06',
+      valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [[20260706, 25.1, null, null]] },
+      revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] },
+    });
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '12', '123456.json')));
+  });
+});
+
+test('monthly revenue writes, revises, no-ops, and advances month manifest deterministically', async () => {
+  await withTempDir(async (root) => {
+    const firstBodies = fixtureBodies();
+    let summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(firstBodies),
+      datasets: ['twse_monthly_revenue'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    assert.equal(summary.results[0].status, 'write');
+    let m = await manifest(root);
+    assert.deepEqual(m.datasets.twse_monthly_revenue, {
+      firstMonth: '2026-06', latestMonth: '2026-06', months: 1, ok: true,
+    });
+    const before = await fileMap(join(root, 'data'));
+    summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(firstBodies),
+      datasets: ['twse_monthly_revenue'],
+      now: () => new Date('2026-07-06T14:45:00Z'),
+    });
+    assert.equal(summary.results[0].status, 'same');
+    assert.deepEqual(await fileMap(join(root, 'data')), before);
+
+    const revised = fixtureBodies({
+      twse_monthly_revenue: jsonBody([{ '資料年月': '11506', '公司代號': '2330', '公司名稱': '台積電', '營業收入-當月營收': '999', '營業收入-去年同月增減(%)': '1', '營業收入-上月比較增減(%)': '2' }]),
+    });
+    summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(revised),
+      datasets: ['twse_monthly_revenue'],
+      now: () => new Date('2026-07-06T15:45:00Z'),
+    });
+    assert.equal(summary.results[0].status, 'revise');
+    assert.equal(
+      await readFile(join(root, 'data', 'raw', 'twse', 'monthly_revenue', '2026', '2026-06.json'), 'utf8'),
+      revised.twse_monthly_revenue,
+    );
+    assert.deepEqual((await readJson(root, 'data/derived/fundamentals/23/2330.json')).revenue.rows, [[202606, 999, 1, 2]]);
+
+    const nextMonth = fixtureBodies({
+      twse_monthly_revenue: jsonBody([{ '資料年月': '11507', '公司代號': '2330', '公司名稱': '台積電', '營業收入-當月營收': '1000', '營業收入-去年同月增減(%)': '3', '營業收入-上月比較增減(%)': '4' }]),
+    });
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(nextMonth),
+      datasets: ['twse_monthly_revenue'],
+      now: () => new Date('2026-08-06T13:45:00Z'),
+    });
+    m = await manifest(root);
+    assert.deepEqual(m.datasets.twse_monthly_revenue, {
+      firstMonth: '2026-06', latestMonth: '2026-07', months: 2, ok: true,
+    });
+    assert.deepEqual((await readJson(root, 'data/derived/fundamentals/23/2330.json')).revenue.rows.map((row) => row[0]), [202606, 202607]);
+  });
+});
+
+test('tpex revenue creates empty valuation, maps invalid numbers to null, and excludes pure six digit ids', async () => {
+  await withTempDir(async (root) => {
+    const bodies = fixtureBodies({
+      tpex_monthly_revenue: jsonBody([
+        { '資料年月': '11506', '公司代號': '6488', '公司名稱': '環球晶', '營業收入-當月營收': '543,210', '營業收入-去年同月增減(%)': 'bad', '營業收入-上月比較增減(%)': '--' },
+        { '資料年月': '11506', '公司代號': '123456', '公司名稱': '排除六碼', '營業收入-當月營收': '1' },
+      ]),
+    });
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(bodies),
+      datasets: ['tpex_monthly_revenue'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    assert.deepEqual(await readJson(root, 'data/derived/fundamentals/64/6488.json'), {
+      id: '6488',
+      name: '環球晶',
+      market: 'tpex',
+      updated: '2026-06-01',
+      valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [] },
+      revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [[202606, 543210, null, null]] },
+    });
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '12', '123456.json')));
   });
 });

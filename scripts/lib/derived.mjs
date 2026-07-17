@@ -1,14 +1,18 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
-import { parseGregorianDate, parseTradingDate, yyyyOf } from './date.mjs';
+import { parseGregorianDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
 import { readJsonIfExists, writeFileEnsured } from './io.mjs';
 
 export const DEFAULT_SYMBOL_WINDOW = 480;
 export const DEFAULT_TDCC_WINDOW = 64;
+export const DEFAULT_VALUATION_WINDOW = 480;
+export const DEFAULT_REVENUE_WINDOW = 36;
 
 const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'];
 const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
+const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
+const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
 const TPEX_INSTI_FIELDS = {
   ff: 'ForeignInvestorsIncludeMainlandAreaInvestors-Difference',
   ft: 'SecuritiesInvestmentTrustCompanies-Difference',
@@ -99,6 +103,19 @@ async function writeDerivedJson(path, value) {
 function updatedFromRows(rows) {
   if (!rows.length) return null;
   return intToIso(rows.at(-1)[0]);
+}
+
+function monthIntToIso(value) {
+  const text = String(value);
+  return `${text.slice(0, 4)}-${text.slice(4, 6)}-01`;
+}
+
+function fundamentalsUpdated(valuationRows, revenueRows) {
+  const values = [];
+  if (valuationRows.length) values.push(intToIso(valuationRows.at(-1)[0]));
+  if (revenueRows.length) values.push(monthIntToIso(revenueRows.at(-1)[0]));
+  values.sort();
+  return values.at(-1) ?? null;
 }
 
 function normalizeTpexInstiKey(key) {
@@ -272,6 +289,36 @@ async function upsertTdcc(rootDir, id, row, window) {
   return writeDerivedJson(path, { id, updated: updatedFromRows(rows), cols: TDCC_COLS, rows });
 }
 
+async function upsertFundamental(rootDir, item, kind, row, window) {
+  const path = join(rootDir, 'data', 'derived', 'fundamentals', p2(item.id), `${item.id}.json`);
+  const current = await readExistingJson(path, {
+    id: item.id,
+    name: item.name,
+    market: item.market,
+    updated: null,
+    valuation: { cols: VALUATION_COLS, rows: [] },
+    revenue: { cols: REVENUE_COLS, rows: [] },
+  });
+  const valuationRows = kind === 'valuation'
+    ? upsertRows(current.valuation?.rows ?? [], row, window)
+    : current.valuation?.rows ?? [];
+  const revenueRows = kind === 'revenue'
+    ? upsertRows(current.revenue?.rows ?? [], row, window)
+    : current.revenue?.rows ?? [];
+  const incomingWinsMetadata = kind === 'valuation'
+    || current.market !== 'twse'
+    || item.market === 'twse';
+  const next = {
+    id: item.id,
+    name: incomingWinsMetadata ? item.name : current.name,
+    market: incomingWinsMetadata ? item.market : current.market,
+    updated: fundamentalsUpdated(valuationRows, revenueRows),
+    valuation: { cols: VALUATION_COLS, rows: valuationRows },
+    revenue: { cols: REVENUE_COLS, rows: revenueRows },
+  };
+  return writeDerivedJson(path, next);
+}
+
 function normalizeMarket(input) {
   return {
     updated: input?.updated ?? null,
@@ -347,7 +394,7 @@ function sumField(rows, field) {
 
 export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_SYMBOL_WINDOW } = {}) {
   const ymd = isoToInt(isoDate);
-  const written = { symbols: 0, market: false };
+  const written = { symbols: 0, fundamentals: 0, market: false };
   const [
     twseIndex,
     twseClose,
@@ -356,6 +403,7 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     tpexClose,
     tpexInstiText,
     tpexMargin,
+    twseValuation,
   ] = await Promise.all([
     readJsonRaw(rootDir, 'twse/mi_index', isoDate),
     readJsonRaw(rootDir, 'twse/stock_day_all', isoDate),
@@ -364,6 +412,7 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     readJsonRaw(rootDir, 'tpex/mainboard_close', isoDate),
     readTextRaw(rootDir, 'tpex/3insti', isoDate),
     readJsonRaw(rootDir, 'tpex/margin', isoDate),
+    readJsonRaw(rootDir, 'twse/bwibbu_all', isoDate),
   ]);
   const tpexInsti = tpexInstiText ? parseTpexInstiRows(tpexInstiText) : null;
 
@@ -430,6 +479,22 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     if (didWrite) written.symbols += 1;
   }
 
+  for (const row of twseValuation ?? []) {
+    const id = String(row?.Code ?? '').trim();
+    if (!isDerivedSymbolId(id)) continue;
+    const didWrite = await upsertFundamental(rootDir, {
+      id,
+      name: row.Name ?? '',
+      market: 'twse',
+    }, 'valuation', [
+      ymd,
+      compactNumber(row.PEratio),
+      compactNumber(row.PBratio),
+      compactNumber(row.DividendYield),
+    ], DEFAULT_VALUATION_WINDOW);
+    if (didWrite) written.fundamentals += 1;
+  }
+
   const marketPath = join(rootDir, 'data', 'derived', 'market.json');
   const market = normalizeMarket(await readExistingJson(marketPath, MARKET_TEMPLATE));
   if (twseIndex) {
@@ -459,6 +524,38 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
   refreshMarketUpdated(market);
   written.market = await writeDerivedJson(marketPath, market);
   return written;
+}
+
+export async function applyMonthlyRevenue(rootDir, monthKey, { revenueWindow = DEFAULT_REVENUE_WINDOW } = {}) {
+  const month = Number(monthKey.replace('-', ''));
+  const sources = [
+    { sourceDataset: 'twse/monthly_revenue', market: 'twse' },
+    { sourceDataset: 'tpex/monthly_revenue', market: 'tpex' },
+  ];
+  let written = 0;
+  for (const source of sources) {
+    const rows = await readJsonIfExists(
+      join(rootDir, 'data', 'raw', source.sourceDataset, monthKey.slice(0, 4), `${monthKey}.json`),
+      null,
+    );
+    for (const row of rows ?? []) {
+      if (parseRocMonth(row?.['資料年月']) !== monthKey) continue;
+      const id = String(row?.['公司代號'] ?? '').trim();
+      if (!isDerivedSymbolId(id)) continue;
+      const didWrite = await upsertFundamental(rootDir, {
+        id,
+        name: row['公司名稱'] ?? '',
+        market: source.market,
+      }, 'revenue', [
+        month,
+        compactNumber(row['營業收入-當月營收']),
+        compactNumber(row['營業收入-去年同月增減(%)']),
+        compactNumber(row['營業收入-上月比較增減(%)']),
+      ], revenueWindow);
+      if (didWrite) written += 1;
+    }
+  }
+  return { fundamentals: written };
 }
 
 export function parseCsvLine(line) {

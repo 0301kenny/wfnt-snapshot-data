@@ -4,7 +4,7 @@ This repo stores official public after-market snapshots for TW Stock Radar. It i
 
 Rules for agents:
 
-- Endpoint allowlist is only the 7 daily endpoints and the TDCC weekly endpoint declared in `scripts/endpoints.mjs`.
+- Endpoint allowlist is only the 8 daily endpoints, 2 monthly revenue endpoints, and the TDCC weekly endpoint declared in `scripts/endpoints.mjs`.
 - Do not add other URLs or undocumented data sources.
 - Keep zero npm dependencies. Use Node 22 built-ins only.
 - Raw snapshots under `data/raw/` are authoritative bytes from official responses. Do not reformat, filter, sort, or prettify them.
@@ -15,5 +15,6 @@ Rules for agents:
 - `scripts/probe.mjs` and `.github/workflows/probe.yml` are probe artifacts and should remain unchanged unless a ticket explicitly allows it.
 - `data/derived/` is a generated read-optimization layer. Raw snapshots remain authoritative, and derived files must be fully rebuildable from raw with `scripts/build-derived.mjs`.
 - Derived symbol outputs must exclude only pure numeric 6-character IDs (`/^\d{6}$/`). Use the same rule for daily symbol series and TDCC series.
+- Fundamentals derived outputs use the same pure numeric 6-character ID exclusion rule and combine daily TWSE valuation with monthly TWSE/TPEX revenue.
 - Incremental derived updates in `scripts/run.mjs` and full rebuilds must share `scripts/lib/derived.mjs`; do not create a second transformation path.
 - Derived serialization must be deterministic and write-on-change only, so no-op reruns produce no byte-level diff.

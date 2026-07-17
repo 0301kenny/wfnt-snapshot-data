@@ -21,6 +21,15 @@ export const ENDPOINTS = [
     requiredFields: ['Date', 'Code', 'Name', 'TradeVolume', 'ClosingPrice'],
   },
   {
+    key: 'twse_bwibbu_all',
+    market: 'twse',
+    sourceDataset: 'twse/bwibbu_all',
+    url: 'https://openapi.twse.com.tw/v1/exchangeReport/BWIBBU_ALL',
+    dateField: 'Date',
+    preferRowDate: true,
+    requiredFields: ['Date', 'Code', 'PEratio'],
+  },
+  {
     key: 'twse_mi_margn',
     market: 'twse',
     sourceDataset: 'twse/mi_margn',
@@ -64,6 +73,22 @@ export const ENDPOINTS = [
     dateField: 'Date',
     preferRowDate: true,
     requiredFields: ['Date', 'SecuritiesCompanyCode', 'CompanyName', 'MarginPurchaseBalance'],
+  },
+  {
+    key: 'twse_monthly_revenue',
+    market: 'twse',
+    cadence: 'monthly',
+    sourceDataset: 'twse/monthly_revenue',
+    url: 'https://openapi.twse.com.tw/v1/opendata/t187ap05_L',
+    requiredFields: ['資料年月', '公司代號', '營業收入-當月營收'],
+  },
+  {
+    key: 'tpex_monthly_revenue',
+    market: 'tpex',
+    cadence: 'monthly',
+    sourceDataset: 'tpex/monthly_revenue',
+    url: 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O',
+    requiredFields: ['資料年月', '公司代號', '營業收入-當月營收'],
   },
   {
     key: 'tdcc',

@@ -46,6 +46,16 @@ export function parseTradingDate(value) {
   return parseRocDate(value) ?? parseGregorianDate(value);
 }
 
+export function parseRocMonth(value) {
+  if (value === null || value === undefined) return null;
+  const match = String(value).trim().match(/^(\d{3})(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]) + 1911;
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return null;
+  return `${year}-${pad2(month)}`;
+}
+
 export function yyyyOf(date) {
   if (!ISO_DATE_RE.test(date)) throw new Error(`invalid ISO date: ${date}`);
   return date.slice(0, 4);
