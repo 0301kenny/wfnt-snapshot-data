@@ -102,6 +102,23 @@ export const ENDPOINTS = [
   },
 ];
 
+// Backfill-only TWSE legacy endpoints. These are intentionally separate from
+// ENDPOINTS so scripts/run.mjs never includes them in the daily pipeline.
+export const BACKFILL_ENDPOINTS = {
+  twse_mi_index_hist: {
+    sourceDataset: 'twse/mi_index_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=${ymd}&type=ALLBUT0999&response=json`,
+  },
+  twse_t86_hist: {
+    sourceDataset: 'twse/t86_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/fund/T86?date=${ymd}&selectType=ALL&response=json`,
+  },
+  twse_mi_margn_hist: {
+    sourceDataset: 'twse/mi_margn_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${ymd}&selectType=ALL&response=json`,
+  },
+};
+
 export function endpointByKey(key) {
   return ENDPOINTS.find((endpoint) => endpoint.key === key);
 }
