@@ -116,12 +116,50 @@ export function parseTwseMiIndexHist(payload) {
 
 export function parseTwseMiMargnHist(payload) {
   const table = requiredLegacyTable(payload, 1, 'MI_MARGN');
-  const indexes = requiredFieldIndexes(table.fields, {
-    id: '股票代號',
-    name: '股票名稱',
-    marginBalance: '融資今日餘額',
-    shortBalance: '融券今日餘額',
-  }, 'MI_MARGN');
+  if (!Array.isArray(table.fields)) throw new Error('MI_MARGN: fields is not an array');
+  if (!Array.isArray(table.groups)) throw new Error('MI_MARGN: groups is not an array');
+
+  const blocks = new Map();
+  let start = 0;
+  for (const group of table.groups) {
+    if (!Number.isInteger(group?.span) || group.span <= 0) {
+      throw new Error('MI_MARGN: invalid group span');
+    }
+    const end = start + group.span;
+    if (end > table.fields.length) throw new Error('MI_MARGN: group spans exceed fields');
+    if (['股票', '融資', '融券'].includes(group.title)) {
+      if (blocks.has(group.title)) throw new Error(`MI_MARGN: duplicate group ${group.title}`);
+      blocks.set(group.title, { start, end });
+    }
+    start = end;
+  }
+  if (start !== table.fields.length) throw new Error('MI_MARGN: group spans do not match fields');
+
+  const expectedStarts = { 股票: 0, 融資: 2, 融券: 8 };
+  const indexInBlock = (title, field) => {
+    const block = blocks.get(title);
+    if (!block || block.start !== expectedStarts[title]) {
+      throw new Error(`MI_MARGN: invalid group ${title}`);
+    }
+    const relativeIndexes = [];
+    for (let index = block.start; index < block.end; index += 1) {
+      if (table.fields[index] === field) relativeIndexes.push(index - block.start);
+    }
+    if (relativeIndexes.length !== 1) {
+      throw new Error(`MI_MARGN: group ${title} must contain exactly one field ${field}`);
+    }
+    return block.start + relativeIndexes[0];
+  };
+
+  const indexes = {
+    id: indexInBlock('股票', '代號'),
+    name: indexInBlock('股票', '名稱'),
+    marginBalance: indexInBlock('融資', '今日餘額'),
+    shortBalance: indexInBlock('融券', '今日餘額'),
+  };
+  if (table.fields[0] !== '代號' || indexes.id !== 0) {
+    throw new Error('MI_MARGN: fields[0] must be 代號');
+  }
   return table.data.map((row) => ({
     '股票代號': String(row?.[indexes.id] ?? '').trim(),
     '股票名稱': String(row?.[indexes.name] ?? '').trim(),

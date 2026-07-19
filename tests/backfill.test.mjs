@@ -9,6 +9,7 @@ import { BACKFILL_ENDPOINTS, ENDPOINTS } from '../scripts/endpoints.mjs';
 import {
   DEFAULT_SYMBOL_WINDOW,
   applyDailyDate,
+  parseTwseMiMargnHist,
   parseTwseT86Hist,
   stableDerivedString,
 } from '../scripts/lib/derived.mjs';
@@ -77,8 +78,25 @@ function miMargnFixture({ code = '2330', name = '台積電' } = {}) {
     tables: [
       { fields: [], data: [] },
       {
-        fields: ['融券今日餘額', '股票名稱', '融資今日餘額', '股票代號'],
-        data: [['120', name, '9,577', code]],
+        fields: [
+          '代號', '名稱',
+          '買進', '賣出', '現金償還', '前日餘額', '今日餘額', '次一營業日限額',
+          '買進', '賣出', '現券償還', '前日餘額', '今日餘額', '次一營業日限額',
+          '資券互抵', '註記',
+        ],
+        groups: [
+          { title: '股票', span: 2 },
+          { title: '融資', span: 6 },
+          { title: '融券', span: 6 },
+          { title: '', span: 1 },
+          { title: '', span: 1 },
+        ],
+        data: [[
+          code, name,
+          '1,000', '900', '0', '9,477', '9,577', '100,000',
+          '10', '5', '0', '115', '120', '20,000',
+          '0', '',
+        ]],
       },
     ],
   };
@@ -164,7 +182,18 @@ test('T86 parser uses field names, sums foreign columns, removes commas, and map
   });
 });
 
-test('hist replay fills the thirteen-column TWSE row when openapi raw is absent', async () => {
+test('MI_MARGN groups select both repeated balances and hist replay fills the thirteen-column TWSE row', async () => {
+  const [margin] = parseTwseMiMargnHist(miMargnFixture());
+  assert.deepEqual(margin, {
+    '股票代號': '2330',
+    '股票名稱': '台積電',
+    '融資今日餘額': '9,577',
+    '融券今日餘額': '120',
+  });
+  const missingGroups = miMargnFixture();
+  delete missingGroups.tables[1].groups;
+  assert.throws(() => parseTwseMiMargnHist(missingGroups), /MI_MARGN: groups is not an array/);
+
   await withTempDir(async (root) => {
     await writeRaw(root, 'twse/mi_index_hist', '2026-07-06', jsonBytes(miIndexFixture()));
     await writeRaw(root, 'twse/mi_margn_hist', '2026-07-06', jsonBytes(miMargnFixture()));
