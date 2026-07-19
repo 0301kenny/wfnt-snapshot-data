@@ -272,6 +272,22 @@ test('TPEX daily parser handles both probed field-name variants and invalid numb
   assert.equal(invalid.TradingShares, null);
 });
 
+test('TPEX daily parser follows field names when fields and rows are reordered', () => {
+  const fixture = tpexDailyFixture();
+  fixture.tables[0].fields.reverse();
+  fixture.tables[0].data[0].reverse();
+  assert.deepEqual(parseTpexDailyQuotesHist(fixture)[0], {
+    SecuritiesCompanyCode: '5483',
+    CompanyName: '中美晶',
+    Open: 244.5,
+    High: 250,
+    Low: 234.5,
+    Close: 235.5,
+    TradingShares: 32146669,
+    TransactionNumber: 28003,
+  });
+});
+
 test('TPEX institution fixed blocks match the probe and reject schema drift', () => {
   assert.deepEqual(parseTpexInstiHist(tpexInstiFixture())[0], {
     SecuritiesCompanyCode: '5483',
@@ -303,6 +319,18 @@ test('TPEX margin parser selects named balances and maps invalid numbers to null
   const invalid = parseTpexMarginHist(tpexMarginFixture({ invalid: true }))[0];
   assert.equal(invalid.MarginPurchaseBalance, null);
   assert.equal(invalid.ShortSaleBalance, null);
+});
+
+test('TPEX margin parser follows field names when fields and rows are reordered', () => {
+  const fixture = tpexMarginFixture();
+  fixture.tables[0].fields.reverse();
+  fixture.tables[0].data[0].reverse();
+  assert.deepEqual(parseTpexMarginHist(fixture)[0], {
+    SecuritiesCompanyCode: '5483',
+    CompanyName: '中美晶',
+    MarginPurchaseBalance: 13591,
+    ShortSaleBalance: 0,
+  });
 });
 
 test('T86 parser uses field names, sums foreign columns, removes commas, and maps invalid cells to null', () => {
@@ -531,6 +559,7 @@ test('checkpoint resumes after interruption without refetching completed dates',
     assert.equal(summary.resumed, 1);
     assert.ok(resumedCalls.length > 0);
     assert.equal(resumedCalls.some((url) => url.includes('date=20260706')), false);
+    assert.equal(resumedCalls.some((url) => url.includes('date=2026/07/06')), false);
     assert.equal((await readJson(root, '.backfill-progress.json')).lastDate, '2026-07-07');
   });
 });
