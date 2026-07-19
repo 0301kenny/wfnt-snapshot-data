@@ -1,4 +1,5 @@
 import test from 'node:test';
+import './backfill.test.mjs';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';

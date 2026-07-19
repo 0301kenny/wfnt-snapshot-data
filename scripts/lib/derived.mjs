@@ -4,7 +4,7 @@ import { gunzipSync } from 'node:zlib';
 import { parseGregorianDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
 import { readJsonIfExists, writeFileEnsured } from './io.mjs';
 
-export const DEFAULT_SYMBOL_WINDOW = 480;
+export const DEFAULT_SYMBOL_WINDOW = 1300;
 export const DEFAULT_TDCC_WINDOW = 64;
 export const DEFAULT_VALUATION_WINDOW = 480;
 export const DEFAULT_REVENUE_WINDOW = 36;
@@ -17,6 +17,15 @@ const TPEX_INSTI_FIELDS = {
   ff: 'ForeignInvestorsIncludeMainlandAreaInvestors-Difference',
   ft: 'SecuritiesInvestmentTrustCompanies-Difference',
   fd: 'Dealers-Difference',
+};
+const T86_FIELDS = {
+  id: '證券代號',
+  name: '證券名稱',
+  foreign: '外陸資買賣超股數(不含外資自營商)',
+  foreignDealer: '外資自營商買賣超股數',
+  trust: '投信買賣超股數',
+  dealer: '自營商買賣超股數',
+  total: '三大法人買賣超股數',
 };
 const MARKET_TEMPLATE = {
   updated: null,
@@ -55,6 +64,88 @@ function compactNumber(value) {
   if (text === '' || text === '--') return null;
   const number = Number(text);
   return Number.isFinite(number) ? number : null;
+}
+
+function requiredFieldIndexes(fields, mapping, label) {
+  if (!Array.isArray(fields)) throw new Error(`${label}: fields is not an array`);
+  const indexes = {};
+  for (const [key, field] of Object.entries(mapping)) {
+    const index = fields.indexOf(field);
+    if (index === -1) throw new Error(`${label}: missing field ${field}`);
+    indexes[key] = index;
+  }
+  return indexes;
+}
+
+function requiredLegacyTable(payload, tableIndex, label) {
+  if (payload?.stat !== 'OK') throw new Error(`${label}: stat is not OK`);
+  const table = payload?.tables?.[tableIndex];
+  if (!table || !Array.isArray(table.data)) throw new Error(`${label}: tables[${tableIndex}] is invalid`);
+  return table;
+}
+
+export function isTwseMiIndexTradingDay(payload) {
+  return payload?.stat === 'OK'
+    && Array.isArray(payload?.tables?.[8]?.data)
+    && payload.tables[8].data.length > 0;
+}
+
+export function parseTwseMiIndexHist(payload) {
+  const table = requiredLegacyTable(payload, 8, 'MI_INDEX');
+  const indexes = requiredFieldIndexes(table.fields, {
+    id: '證券代號',
+    name: '證券名稱',
+    volume: '成交股數',
+    transactions: '成交筆數',
+    open: '開盤價',
+    high: '最高價',
+    low: '最低價',
+    close: '收盤價',
+  }, 'MI_INDEX');
+  return table.data.map((row) => ({
+    Code: String(row?.[indexes.id] ?? '').trim(),
+    Name: String(row?.[indexes.name] ?? '').trim(),
+    TradeVolume: row?.[indexes.volume],
+    Transaction: row?.[indexes.transactions],
+    OpeningPrice: row?.[indexes.open],
+    HighestPrice: row?.[indexes.high],
+    LowestPrice: row?.[indexes.low],
+    ClosingPrice: row?.[indexes.close],
+  }));
+}
+
+export function parseTwseMiMargnHist(payload) {
+  const table = requiredLegacyTable(payload, 1, 'MI_MARGN');
+  const indexes = requiredFieldIndexes(table.fields, {
+    id: '股票代號',
+    name: '股票名稱',
+    marginBalance: '融資今日餘額',
+    shortBalance: '融券今日餘額',
+  }, 'MI_MARGN');
+  return table.data.map((row) => ({
+    '股票代號': String(row?.[indexes.id] ?? '').trim(),
+    '股票名稱': String(row?.[indexes.name] ?? '').trim(),
+    '融資今日餘額': row?.[indexes.marginBalance],
+    '融券今日餘額': row?.[indexes.shortBalance],
+  }));
+}
+
+export function parseTwseT86Hist(payload) {
+  if (payload?.stat !== 'OK') throw new Error('T86: stat is not OK');
+  if (!Array.isArray(payload.data)) throw new Error('T86: data is not an array');
+  const indexes = requiredFieldIndexes(payload.fields, T86_FIELDS, 'T86');
+  return payload.data.map((row) => {
+    const foreign = compactNumber(row?.[indexes.foreign]);
+    const foreignDealer = compactNumber(row?.[indexes.foreignDealer]);
+    return {
+      id: String(row?.[indexes.id] ?? '').trim(),
+      name: String(row?.[indexes.name] ?? '').trim(),
+      fi: compactNumber(row?.[indexes.total]),
+      ff: foreign === null || foreignDealer === null ? null : foreign + foreignDealer,
+      ft: compactNumber(row?.[indexes.trust]),
+      fd: compactNumber(row?.[indexes.dealer]),
+    };
+  });
 }
 
 function sumCell(value) {
@@ -447,13 +538,16 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
   const written = { symbols: 0, fundamentals: 0, market: false };
   const [
     twseIndex,
-    twseClose,
-    twseMargin,
+    twseCloseOpenApi,
+    twseMarginOpenApi,
     tpexIndex,
     tpexClose,
     tpexInstiText,
     tpexMargin,
     twseValuation,
+    twseCloseHistRaw,
+    twseT86HistRaw,
+    twseMarginHistRaw,
   ] = await Promise.all([
     readJsonRaw(rootDir, 'twse/mi_index', isoDate),
     readJsonRaw(rootDir, 'twse/stock_day_all', isoDate),
@@ -463,10 +557,21 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     readTextRaw(rootDir, 'tpex/3insti', isoDate),
     readJsonRaw(rootDir, 'tpex/margin', isoDate),
     readJsonRaw(rootDir, 'twse/bwibbu_all', isoDate),
+    readJsonRaw(rootDir, 'twse/mi_index_hist', isoDate),
+    readJsonRaw(rootDir, 'twse/t86_hist', isoDate),
+    readJsonRaw(rootDir, 'twse/mi_margn_hist', isoDate),
   ]);
   const tpexInsti = tpexInstiText ? parseTpexInstiRows(tpexInstiText) : null;
+  const twseClose = twseCloseOpenApi !== null
+    ? twseCloseOpenApi
+    : twseCloseHistRaw === null ? null : parseTwseMiIndexHist(twseCloseHistRaw);
+  const twseMargin = twseMarginOpenApi !== null
+    ? twseMarginOpenApi
+    : twseMarginHistRaw === null ? null : parseTwseMiMargnHist(twseMarginHistRaw);
+  const twseT86 = twseT86HistRaw === null ? null : parseTwseT86Hist(twseT86HistRaw);
 
   const twseMarginById = mapBy(twseMargin, '股票代號');
+  const twseT86ById = mapBy(twseT86, 'id');
   const tpexMarginById = mapBy(tpexMargin, 'SecuritiesCompanyCode');
   const tpexInstiById = mapBy(tpexInsti, 'SecuritiesCompanyCode');
   const twseIds = new Set();
@@ -476,6 +581,7 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     if (!isDerivedSymbolId(id)) continue;
     twseIds.add(id);
     const [mb, ms] = balanceRow(twseMarginById.get(id), '融資今日餘額', '融券今日餘額');
+    const insti = twseT86ById.get(id);
     const didWrite = await upsertSymbol(rootDir, {
       id,
       name: row.Name ?? '',
@@ -490,10 +596,10 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
       compactNumber(row.Transaction),
       mb,
       ms,
-      null,
-      null,
-      null,
-      null,
+      insti?.fi ?? null,
+      insti?.ff ?? null,
+      insti?.ft ?? null,
+      insti?.fd ?? null,
     ], symbolWindow);
     if (didWrite) written.symbols += 1;
   }

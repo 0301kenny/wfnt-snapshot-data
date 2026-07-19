@@ -2,7 +2,7 @@
 
 TW Stock Radar 的每日官方開放資料快照服務。
 
-- 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料——全部為官方公開的**盤後**資料,本 repo 只做每日留存,不即時、不推播。
+- 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE legacy 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。
 - `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 8 個日更端點與 2 個月營收端點,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
 
@@ -28,6 +28,25 @@ data/raw/{source_dataset}/{yyyy}/{date}.json
 Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、不過濾。`data/manifest.json` 只在資料或狀態實際變更時改寫;同日 no-op 重跑不得產生 diff。
 
 `twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日。
+
+## TWSE historical backfill
+
+`scripts/backfill.mjs` 只供授權的歷史回補批次使用,不參與 `scripts/run.mjs` 日更流程。它依日抓取官方 TWSE legacy `MI_INDEX`、`T86`、`MI_MARGN`,把 response body 原樣 bytes 寫入:
+
+```text
+data/raw/twse/mi_index_hist/{yyyy}/{date}.json
+data/raw/twse/t86_hist/{yyyy}/{date}.json
+data/raw/twse/mi_margn_hist/{yyyy}/{date}.json
+```
+
+當日已有 `twse/stock_day_all` openapi raw 時,MI_INDEX 與 MI_MARGN 不重複抓取,T86 仍會抓取以補 TWSE 法人欄位。Derived 優先使用已有 openapi 的價量與資券值,hist 只在 openapi 缺席時補位;T86 則會填入 `fi/ff/ft/fd`。回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
+
+手動用法(預設寫本 repo `data/`;`--out` 可指向 scratch root):
+
+```bash
+node scripts/backfill.mjs --from 2021-07-01 --to 2026-06-30
+node scripts/backfill.mjs --from 2021-07-01 --to 2021-07-31 --out ./.backfill-out
+```
 
 ## Monthly revenue snapshot
 
@@ -118,11 +137,11 @@ data/derived/market.json
 - `o/h/l/c`:開高低收,照 raw 數字單位。
 - `v`:成交股數;`t`:成交筆數。
 - `mb/ms`:融資/融券今日餘額,單位張。
-- `fi`:三大法人合計買賣超,單位股。TWSE 個股法人欄位不存在,固定 `null`;TPEX 取 `TotalDifference`。
-- `ff`:外資(含陸資)買賣超,單位股。僅 TPEX 填值,TWSE 固定 `null`;來源欄位以去空白後的 `ForeignInvestorsIncludeMainlandAreaInvestors-Difference` 縮寫版為準,不取含 `(Foreign Dealers excluded)` 的長版。
-- `ft`:投信買賣超,單位股。僅 TPEX 填值,TWSE 固定 `null`;缺欄時為 `null`。
-- `fd`:自營商買賣超,單位股。僅 TPEX 填值,TWSE 固定 `null`;缺欄時為 `null`。
-- Rows 依 `d` 升冪,rolling window 預設 480 筆交易日。
+- `fi`:三大法人合計買賣超,單位股。TWSE 取 T86 `三大法人買賣超股數`;TPEX 取 `TotalDifference`。
+- `ff`:外資(含陸資)買賣超,單位股。TWSE 為 T86 `外陸資買賣超股數(不含外資自營商)` 加 `外資自營商買賣超股數`;TPEX 來源欄位以去空白後的 `ForeignInvestorsIncludeMainlandAreaInvestors-Difference` 縮寫版為準,不取含 `(Foreign Dealers excluded)` 的長版。
+- `ft`:投信買賣超,單位股。TWSE 取 T86 `投信買賣超股數`;TPEX 取 `SecuritiesInvestmentTrustCompanies-Difference`;缺欄時為 `null`。
+- `fd`:自營商買賣超,單位股。TWSE 取 T86 `自營商買賣超股數`;TPEX 取 `Dealers-Difference`;缺欄時為 `null`。
+- Rows 依 `d` 升冪,rolling window 預設 1300 筆交易日。
 
 ### TDCC weekly series
 
