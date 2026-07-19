@@ -199,6 +199,7 @@ export async function runBackfill({
       if (!isTwseMiIndexTradingDay(miIndex)) {
         summary.skipped += 1;
         logger.log(`[skip] ${iso} non-trading day`);
+        await saveCheckpoint(rootDir, iso, now);
         continue;
       }
       parseTwseMiIndexHist(miIndex);
