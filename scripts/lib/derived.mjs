@@ -186,6 +186,82 @@ export function parseTwseT86Hist(payload) {
   });
 }
 
+function requiredTpexLegacyTable(payload, label) {
+  if (payload?.stat !== 'ok') throw new Error(`${label}: stat is not ok`);
+  const table = payload?.tables?.[0];
+  if (!table || !Array.isArray(table.data)) throw new Error(`${label}: tables[0] is invalid`);
+  return table;
+}
+
+export function isTpexDailyQuotesTradingDay(payload) {
+  return payload?.stat === 'ok'
+    && Array.isArray(payload?.tables?.[0]?.data)
+    && payload.tables[0].data.length > 0;
+}
+
+export function parseTpexDailyQuotesHist(payload) {
+  const table = requiredTpexLegacyTable(payload, 'TPEX_DAILY_QUOTES');
+  const indexes = requiredFieldIndexes(table.fields, {
+    id: '代號',
+    name: '名稱',
+    close: '收盤',
+    open: '開盤',
+    high: '最高',
+    low: '最低',
+    volume: '成交股數',
+    transactions: '成交筆數',
+  }, 'TPEX_DAILY_QUOTES');
+  return table.data.map((row) => ({
+    SecuritiesCompanyCode: String(row?.[indexes.id] ?? '').trim(),
+    CompanyName: String(row?.[indexes.name] ?? '').trim(),
+    Open: compactNumber(row?.[indexes.open]),
+    High: compactNumber(row?.[indexes.high]),
+    Low: compactNumber(row?.[indexes.low]),
+    Close: compactNumber(row?.[indexes.close]),
+    TradingShares: compactNumber(row?.[indexes.volume]),
+    TransactionNumber: compactNumber(row?.[indexes.transactions]),
+  }));
+}
+
+export function parseTpexInstiHist(payload) {
+  const table = requiredTpexLegacyTable(payload, 'TPEX_INSTI');
+  if (!Array.isArray(table.fields) || table.fields.length !== 24) {
+    throw new Error('TPEX_INSTI: fields length must be 24');
+  }
+  if (table.fields[23] !== '三大法人買賣超股數合計') {
+    throw new Error('TPEX_INSTI: fields[23] must be 三大法人買賣超股數合計');
+  }
+  return table.data.map((row, index) => {
+    if (!Array.isArray(row) || row.length !== 24) {
+      throw new Error(`TPEX_INSTI: data[${index}] width must be 24`);
+    }
+    return {
+      SecuritiesCompanyCode: String(row[0] ?? '').trim(),
+      CompanyName: String(row[1] ?? '').trim(),
+      TotalDifference: compactNumber(row[23]),
+      [TPEX_INSTI_FIELDS.ff]: compactNumber(row[10]),
+      [TPEX_INSTI_FIELDS.ft]: compactNumber(row[13]),
+      [TPEX_INSTI_FIELDS.fd]: compactNumber(row[22]),
+    };
+  });
+}
+
+export function parseTpexMarginHist(payload) {
+  const table = requiredTpexLegacyTable(payload, 'TPEX_MARGIN');
+  const indexes = requiredFieldIndexes(table.fields, {
+    id: '代號',
+    name: '名稱',
+    marginBalance: '資餘額',
+    shortBalance: '券餘額',
+  }, 'TPEX_MARGIN');
+  return table.data.map((row) => ({
+    SecuritiesCompanyCode: String(row?.[indexes.id] ?? '').trim(),
+    CompanyName: String(row?.[indexes.name] ?? '').trim(),
+    MarginPurchaseBalance: compactNumber(row?.[indexes.marginBalance]),
+    ShortSaleBalance: compactNumber(row?.[indexes.shortBalance]),
+  }));
+}
+
 function sumCell(value) {
   if (value === null || value === undefined || String(value).trim() === '') return { ok: true, value: 0 };
   const number = compactNumber(value);
@@ -579,13 +655,16 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     twseCloseOpenApi,
     twseMarginOpenApi,
     tpexIndex,
-    tpexClose,
+    tpexCloseOpenApi,
     tpexInstiText,
-    tpexMargin,
+    tpexMarginOpenApi,
     twseValuation,
     twseCloseHistRaw,
     twseT86HistRaw,
     twseMarginHistRaw,
+    tpexCloseHistRaw,
+    tpexInstiHistRaw,
+    tpexMarginHistRaw,
   ] = await Promise.all([
     readJsonRaw(rootDir, 'twse/mi_index', isoDate),
     readJsonRaw(rootDir, 'twse/stock_day_all', isoDate),
@@ -598,8 +677,20 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     readJsonRaw(rootDir, 'twse/mi_index_hist', isoDate),
     readJsonRaw(rootDir, 'twse/t86_hist', isoDate),
     readJsonRaw(rootDir, 'twse/mi_margn_hist', isoDate),
+    readJsonRaw(rootDir, 'tpex/daily_quotes_hist', isoDate),
+    readJsonRaw(rootDir, 'tpex/insti_hist', isoDate),
+    readJsonRaw(rootDir, 'tpex/margin_hist', isoDate),
   ]);
-  const tpexInsti = tpexInstiText ? parseTpexInstiRows(tpexInstiText) : null;
+  const tpexClose = tpexCloseOpenApi !== null
+    ? tpexCloseOpenApi
+    : tpexCloseHistRaw === null ? null : parseTpexDailyQuotesHist(tpexCloseHistRaw);
+  const tpexInstiOpenApi = tpexInstiText ? parseTpexInstiRows(tpexInstiText) : null;
+  const tpexInsti = tpexInstiOpenApi !== null
+    ? tpexInstiOpenApi
+    : tpexInstiHistRaw === null ? null : parseTpexInstiHist(tpexInstiHistRaw);
+  const tpexMargin = tpexMarginOpenApi !== null
+    ? tpexMarginOpenApi
+    : tpexMarginHistRaw === null ? null : parseTpexMarginHist(tpexMarginHistRaw);
   const twseClose = twseCloseOpenApi !== null
     ? twseCloseOpenApi
     : twseCloseHistRaw === null ? null : parseTwseMiIndexHist(twseCloseHistRaw);

@@ -102,7 +102,7 @@ export const ENDPOINTS = [
   },
 ];
 
-// Backfill-only TWSE legacy endpoints. These are intentionally separate from
+// Backfill-only TWSE and TPEX legacy endpoints. These are intentionally separate from
 // ENDPOINTS so scripts/run.mjs never includes them in the daily pipeline.
 export const BACKFILL_ENDPOINTS = {
   twse_mi_index_hist: {
@@ -116,6 +116,18 @@ export const BACKFILL_ENDPOINTS = {
   twse_mi_margn_hist: {
     sourceDataset: 'twse/mi_margn_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${ymd}&selectType=ALL&response=json`,
+  },
+  tpex_daily_quotes_hist: {
+    sourceDataset: 'tpex/daily_quotes_hist',
+    url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&type=EW&response=json`,
+  },
+  tpex_insti_hist: {
+    sourceDataset: 'tpex/insti_hist',
+    url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade?type=Daily&sect=EW&date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&response=json`,
+  },
+  tpex_margin_hist: {
+    sourceDataset: 'tpex/margin_hist',
+    url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/margin/balance?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&response=json`,
   },
 };
 

@@ -1,4 +1,4 @@
-// TWSE legacy historical backfill. Raw response bytes are authoritative;
+// TWSE and TPEX legacy historical backfill. Raw response bytes are authoritative;
 // derived output is produced only through scripts/lib/derived.mjs::applyDailyDate.
 
 import { access, readFile } from 'node:fs/promises';
@@ -9,7 +9,11 @@ import { BACKFILL_ENDPOINTS } from './endpoints.mjs';
 import {
   DEFAULT_SYMBOL_WINDOW,
   applyDailyDate,
+  isTpexDailyQuotesTradingDay,
   isTwseMiIndexTradingDay,
+  parseTpexDailyQuotesHist,
+  parseTpexInstiHist,
+  parseTpexMarginHist,
   parseTwseMiIndexHist,
   parseTwseMiMargnHist,
   parseTwseT86Hist,
@@ -81,7 +85,9 @@ async function fetchBytesWithRetry(url, {
       const response = await fetchImpl(url, {
         headers: {
           'User-Agent': USER_AGENT,
-          Referer: 'https://www.twse.com.tw/',
+          Referer: url.startsWith('https://www.tpex.org.tw/')
+            ? 'https://www.tpex.org.tw/'
+            : 'https://www.twse.com.tw/',
           Accept: 'application/json',
         },
         signal: AbortSignal.timeout(60_000),
@@ -176,6 +182,7 @@ export async function runBackfill({
     skipped: 0,
     resumed: 0,
     openApiDays: 0,
+    tpexOpenApiDays: 0,
     rawWritten: 0,
     derivedSymbols: 0,
   };
@@ -188,58 +195,111 @@ export async function runBackfill({
       continue;
     }
 
-    const openApiCloseExists = await fileExists(rawPath(rootDir, 'twse/stock_day_all', iso));
+    const twseOpenApiCloseExists = await fileExists(rawPath(rootDir, 'twse/stock_day_all', iso));
+    let twseTrading = false;
+    let twseSource = 'non-trading';
     let miIndexBytes = null;
-    let miIndex = null;
-    if (openApiCloseExists) {
+    let t86Bytes = null;
+    let miMargnBytes = null;
+    if (twseOpenApiCloseExists) {
       summary.openApiDays += 1;
+      twseTrading = true;
+      twseSource = 'openapi+t86';
     } else {
       miIndexBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_mi_index_hist, iso, fetchOptions);
-      miIndex = parseJsonBytes(miIndexBytes, 'MI_INDEX');
-      if (!isTwseMiIndexTradingDay(miIndex)) {
-        summary.skipped += 1;
-        logger.log(`[skip] ${iso} non-trading day`);
-        await saveCheckpoint(rootDir, iso, now);
-        continue;
+      const miIndex = parseJsonBytes(miIndexBytes, 'MI_INDEX');
+      if (isTwseMiIndexTradingDay(miIndex)) {
+        parseTwseMiIndexHist(miIndex);
+        twseTrading = true;
+        twseSource = 'legacy';
       }
-      parseTwseMiIndexHist(miIndex);
     }
 
-    const t86Bytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_t86_hist, iso, fetchOptions);
-    const t86 = parseJsonBytes(t86Bytes, 'T86');
-    parseTwseT86Hist(t86);
-
-    let miMargnBytes = null;
-    if (!openApiCloseExists) {
-      miMargnBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_mi_margn_hist, iso, fetchOptions);
-      const miMargn = parseJsonBytes(miMargnBytes, 'MI_MARGN');
-      parseTwseMiMargnHist(miMargn);
+    if (twseTrading) {
+      t86Bytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_t86_hist, iso, fetchOptions);
+      parseTwseT86Hist(parseJsonBytes(t86Bytes, 'T86'));
+      if (!twseOpenApiCloseExists) {
+        miMargnBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_mi_margn_hist, iso, fetchOptions);
+        parseTwseMiMargnHist(parseJsonBytes(miMargnBytes, 'MI_MARGN'));
+      }
     }
 
     const rawWrites = [];
-    if (miIndexBytes) {
+    if (twseTrading && miIndexBytes) {
       rawWrites.push(writeRawBytesOnChange(
         rawPath(rootDir, BACKFILL_ENDPOINTS.twse_mi_index_hist.sourceDataset, iso),
         miIndexBytes,
       ));
     }
-    rawWrites.push(writeRawBytesOnChange(
-      rawPath(rootDir, BACKFILL_ENDPOINTS.twse_t86_hist.sourceDataset, iso),
-      t86Bytes,
-    ));
-    if (miMargnBytes) {
+    if (t86Bytes) {
+      rawWrites.push(writeRawBytesOnChange(
+        rawPath(rootDir, BACKFILL_ENDPOINTS.twse_t86_hist.sourceDataset, iso),
+        t86Bytes,
+      ));
+    }
+    if (twseTrading && miMargnBytes) {
       rawWrites.push(writeRawBytesOnChange(
         rawPath(rootDir, BACKFILL_ENDPOINTS.twse_mi_margn_hist.sourceDataset, iso),
         miMargnBytes,
       ));
     }
+
+    const tpexOpenApiCloseExists = await fileExists(rawPath(rootDir, 'tpex/mainboard_close', iso));
+    let tpexTrading = false;
+    let tpexSource = 'non-trading';
+    let tpexDailyBytes = null;
+    let tpexInstiBytes = null;
+    let tpexMarginBytes = null;
+    if (tpexOpenApiCloseExists) {
+      summary.tpexOpenApiDays += 1;
+      tpexTrading = true;
+      tpexSource = 'openapi';
+    } else {
+      tpexDailyBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.tpex_daily_quotes_hist, iso, fetchOptions);
+      const tpexDaily = parseJsonBytes(tpexDailyBytes, 'TPEX_DAILY_QUOTES');
+      if (isTpexDailyQuotesTradingDay(tpexDaily)) {
+        parseTpexDailyQuotesHist(tpexDaily);
+        tpexTrading = true;
+        tpexSource = 'legacy';
+        tpexInstiBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.tpex_insti_hist, iso, fetchOptions);
+        parseTpexInstiHist(parseJsonBytes(tpexInstiBytes, 'TPEX_INSTI'));
+        tpexMarginBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.tpex_margin_hist, iso, fetchOptions);
+        parseTpexMarginHist(parseJsonBytes(tpexMarginBytes, 'TPEX_MARGIN'));
+      }
+    }
+
+    if (tpexTrading && tpexDailyBytes) {
+      rawWrites.push(writeRawBytesOnChange(
+        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_daily_quotes_hist.sourceDataset, iso),
+        tpexDailyBytes,
+      ));
+    }
+    if (tpexInstiBytes) {
+      rawWrites.push(writeRawBytesOnChange(
+        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_insti_hist.sourceDataset, iso),
+        tpexInstiBytes,
+      ));
+    }
+    if (tpexMarginBytes) {
+      rawWrites.push(writeRawBytesOnChange(
+        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_margin_hist.sourceDataset, iso),
+        tpexMarginBytes,
+      ));
+    }
     summary.rawWritten += (await Promise.all(rawWrites)).filter(Boolean).length;
+
+    if (!twseTrading && !tpexTrading) {
+      summary.skipped += 1;
+      logger.log(`[skip] ${iso} non-trading day (twse+tpex)`);
+      await saveCheckpoint(rootDir, iso, now);
+      continue;
+    }
 
     const written = await applyDailyDate(rootDir, iso, { symbolWindow });
     await saveCheckpoint(rootDir, iso, now);
     summary.trading += 1;
     summary.derivedSymbols += written.symbols;
-    logger.log(`[ok] ${iso} source=${openApiCloseExists ? 'openapi+t86' : 'legacy'} derivedWritten=${written.symbols}`);
+    logger.log(`[ok] ${iso} twse=${twseSource} tpex=${tpexSource} derivedWritten=${written.symbols}`);
   }
 
   logger.log(`[done] trading=${summary.trading} skipped=${summary.skipped} resumed=${summary.resumed} rawWritten=${summary.rawWritten} derivedSymbolsWritten=${summary.derivedSymbols}`);
