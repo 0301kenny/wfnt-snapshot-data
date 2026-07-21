@@ -1,0 +1,5 @@
+# Snapshot data is local-only — never versioned in git (too large; see TICKET-070)
+data/
+
+# Backfill runtime checkpoint
+.backfill-progress.json
