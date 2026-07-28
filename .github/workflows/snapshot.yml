@@ -17,7 +17,7 @@ on:
         type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: snapshot
@@ -28,11 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
 
@@ -43,15 +43,19 @@ jobs:
           SNAPSHOT_FORCE: ${{ inputs.force }}
         run: node scripts/run.mjs
 
-      - name: Commit and push data changes
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A data/
-          if git diff --cached --quiet; then
-            echo "No data changes to commit."
-            exit 0
-          fi
-          git commit -m "${{ steps.snapshot.outputs.commit_message }}"
-          git pull --rebase
-          git push
+      # data/ is git-ignored (local-only since TICKET-070), so the run output is kept
+      # as a build artifact instead of being committed. Replaced by an R2 sync later.
+      - name: Upload snapshot output
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: snapshot-${{ github.run_id }}
+          path: data/
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Report snapshot summary
+        if: always()
+        env:
+          SUMMARY: ${{ steps.snapshot.outputs.commit_message }}
+        run: echo "${SUMMARY:-(no summary produced)}" >> "$GITHUB_STEP_SUMMARY"
