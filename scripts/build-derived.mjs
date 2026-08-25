@@ -11,6 +11,7 @@ const DAILY_SOURCES = [
   'twse/mi_index_hist',
   'twse/t86_hist',
   'twse/mi_margn_hist',
+  'twse/bwibbu_hist',
   'tpex/index',
   'tpex/mainboard_close',
   'tpex/3insti',
@@ -18,6 +19,7 @@ const DAILY_SOURCES = [
   'tpex/daily_quotes_hist',
   'tpex/insti_hist',
   'tpex/margin_hist',
+  'tpex/pe_hist',
 ];
 
 const MONTHLY_SOURCES = ['twse/monthly_revenue', 'tpex/monthly_revenue'];

@@ -31,18 +31,20 @@ Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、�
 
 ## TWSE/TPEX historical backfill
 
-`scripts/backfill.mjs` 只供授權的歷史回補批次使用,不參與 `scripts/run.mjs` 日更流程。它依日抓取官方 TWSE legacy `MI_INDEX`、`T86`、`MI_MARGN` 與 TPEX legacy `dailyQuotes`、`dailyTrade`、`balance`,把 response body 原樣 bytes 寫入:
+`scripts/backfill.mjs` 只供授權的歷史回補批次使用,不參與 `scripts/run.mjs` 日更流程。它依日抓取官方 TWSE legacy `MI_INDEX`、`T86`、`MI_MARGN`、`BWIBBU_d` 與 TPEX legacy `dailyQuotes`、`dailyTrade`、`balance`、`peQryDate`,把 response body 原樣 bytes 寫入:
 
 ```text
 data/raw/twse/mi_index_hist/{yyyy}/{date}.json
 data/raw/twse/t86_hist/{yyyy}/{date}.json
 data/raw/twse/mi_margn_hist/{yyyy}/{date}.json
+data/raw/twse/bwibbu_hist/{yyyy}/{date}.json
 data/raw/tpex/daily_quotes_hist/{yyyy}/{date}.json
 data/raw/tpex/insti_hist/{yyyy}/{date}.json
 data/raw/tpex/margin_hist/{yyyy}/{date}.json
+data/raw/tpex/pe_hist/{yyyy}/{date}.json
 ```
 
-TWSE 與 TPEX 各自獨立判斷交易日與 openapi 是否存在。當日已有 `twse/stock_day_all` raw 時,MI_INDEX 與 MI_MARGN 不重複抓取,T86 仍會抓取以補 TWSE 法人欄位;已有 `tpex/mainboard_close` raw 時則跳過三個 TPEX legacy 端點。Derived 優先使用已有 openapi,只在對應 openapi 缺席時以 hist 補位,並共用日更的單一轉換路徑。回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
+TWSE 與 TPEX 各自獨立判斷交易日與 openapi 是否存在。當日已有 `twse/stock_day_all` raw 時,MI_INDEX 與 MI_MARGN 不重複抓取,T86 仍會抓取以補 TWSE 法人欄位,BWIBBU_d 也一律抓取以補估值歷史;已有 `tpex/mainboard_close` raw 時則跳過 dailyQuotes、dailyTrade、balance 三個 TPEX legacy 端點,但 peQryDate 仍一律抓取。Derived 優先使用已有 openapi,只在對應 openapi 缺席時以 hist 補位,並共用日更的單一轉換路徑。回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
 
 手動用法(預設寫本 repo `data/`;`--out` 可指向 scratch root):
 
@@ -183,9 +185,9 @@ data/derived/market.json
 }
 ```
 
-- `name` / `market`:來源列公司名稱與資料集市場。若同代號跨來源碰撞,TWSE metadata 優先;估值來源固定為 TWSE。
+- `name` / `market`:來源列公司名稱與資料集市場。若同代號跨來源碰撞,TWSE metadata 優先;TWSE 與 TPEX 皆有估值來源。
 - `updated`:valuation 最大 `d` 轉 ISO 日期與 revenue 最大 `m` 轉該月 1 日後,取兩者較新值;因此僅有月營收時例如 `202606` 為 `2026-06-01`。此規則不依執行時間,可確定性重建。
-- `d`:西元 `yyyymmdd` 整數;`per` / `pbr` / `dy` 分別是 `PEratio` / `PBratio` / `DividendYield`。估值只有 TWSE 官方端點,TPEX 個股 valuation rows 為空。Rolling window 480 筆。
+- `d`:西元 `yyyymmdd` 整數;`per` / `pbr` / `dy` 分別是 `PEratio` / `PBratio` / `DividendYield`。TWSE 估值採 openapi 優先、legacy fallback;TPEX 估值只有 legacy 來源。Rolling window 1300 筆。
 - `m`:西元 `yyyymm` 整數;`rev` 是 `營業收入-當月營收` 的千元原值,不換算;`yoy` / `mom` 分別是去年同月與上月比較增減百分比。Rolling window 36 筆。
 - 所有數值會移除千分位逗號後轉 Number;空字串、`--`、非有限數或不可解析值為 `null`。Rows 依 `d` / `m` 升冪並以同鍵 upsert。
 

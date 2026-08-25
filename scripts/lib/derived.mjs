@@ -6,7 +6,7 @@ import { readJsonIfExists, writeFileEnsured } from './io.mjs';
 
 export const DEFAULT_SYMBOL_WINDOW = 1300;
 export const DEFAULT_TDCC_WINDOW = 64;
-export const DEFAULT_VALUATION_WINDOW = 480;
+export const DEFAULT_VALUATION_WINDOW = 1300;
 export const DEFAULT_REVENUE_WINDOW = 36;
 
 const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'];
@@ -186,6 +186,25 @@ export function parseTwseT86Hist(payload) {
   });
 }
 
+export function parseTwseBwibbuHist(payload) {
+  if (payload?.stat !== 'OK') throw new Error('BWIBBU_d: stat is not OK');
+  if (!Array.isArray(payload.data)) throw new Error('BWIBBU_d: data is not an array');
+  const indexes = requiredFieldIndexes(payload.fields, {
+    id: '證券代號',
+    name: '證券名稱',
+    per: '本益比',
+    dy: '殖利率(%)',
+    pbr: '股價淨值比',
+  }, 'BWIBBU_d');
+  return payload.data.map((row) => ({
+    Code: String(row?.[indexes.id] ?? '').trim(),
+    Name: String(row?.[indexes.name] ?? '').trim(),
+    PEratio: compactNumber(row?.[indexes.per]),
+    PBratio: compactNumber(row?.[indexes.pbr]),
+    DividendYield: compactNumber(row?.[indexes.dy]),
+  }));
+}
+
 function requiredTpexLegacyTable(payload, label) {
   if (payload?.stat !== 'ok') throw new Error(`${label}: stat is not ok`);
   const table = payload?.tables?.[0];
@@ -259,6 +278,24 @@ export function parseTpexMarginHist(payload) {
     CompanyName: String(row?.[indexes.name] ?? '').trim(),
     MarginPurchaseBalance: compactNumber(row?.[indexes.marginBalance]),
     ShortSaleBalance: compactNumber(row?.[indexes.shortBalance]),
+  }));
+}
+
+export function parseTpexPeHist(payload) {
+  const table = requiredTpexLegacyTable(payload, 'TPEX_PE');
+  const indexes = requiredFieldIndexes(table.fields, {
+    id: '股票代號',
+    name: '公司名稱',
+    per: '本益比',
+    dy: '殖利率(%)',
+    pbr: '股價淨值比',
+  }, 'TPEX_PE');
+  return table.data.map((row) => ({
+    Code: String(row?.[indexes.id] ?? '').trim(),
+    Name: String(row?.[indexes.name] ?? '').trim(),
+    PEratio: compactNumber(row?.[indexes.per]),
+    PBratio: compactNumber(row?.[indexes.pbr]),
+    DividendYield: compactNumber(row?.[indexes.dy]),
   }));
 }
 
@@ -658,13 +695,15 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     tpexCloseOpenApi,
     tpexInstiText,
     tpexMarginOpenApi,
-    twseValuation,
+    twseValuationOpenApi,
     twseCloseHistRaw,
     twseT86HistRaw,
     twseMarginHistRaw,
     tpexCloseHistRaw,
     tpexInstiHistRaw,
     tpexMarginHistRaw,
+    twseValuationHistRaw,
+    tpexValuationHistRaw,
   ] = await Promise.all([
     readJsonRaw(rootDir, 'twse/mi_index', isoDate),
     readJsonRaw(rootDir, 'twse/stock_day_all', isoDate),
@@ -680,6 +719,8 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     readJsonRaw(rootDir, 'tpex/daily_quotes_hist', isoDate),
     readJsonRaw(rootDir, 'tpex/insti_hist', isoDate),
     readJsonRaw(rootDir, 'tpex/margin_hist', isoDate),
+    readJsonRaw(rootDir, 'twse/bwibbu_hist', isoDate),
+    readJsonRaw(rootDir, 'tpex/pe_hist', isoDate),
   ]);
   const tpexClose = tpexCloseOpenApi !== null
     ? tpexCloseOpenApi
@@ -698,6 +739,10 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     ? twseMarginOpenApi
     : twseMarginHistRaw === null ? null : parseTwseMiMargnHist(twseMarginHistRaw);
   const twseT86 = twseT86HistRaw === null ? null : parseTwseT86Hist(twseT86HistRaw);
+  const twseValuation = twseValuationOpenApi !== null
+    ? twseValuationOpenApi
+    : twseValuationHistRaw === null ? null : parseTwseBwibbuHist(twseValuationHistRaw);
+  const tpexValuation = tpexValuationHistRaw === null ? null : parseTpexPeHist(tpexValuationHistRaw);
 
   const twseMarginById = mapBy(twseMargin, '股票代號');
   const twseT86ById = mapBy(twseT86, 'id');
@@ -765,16 +810,21 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
   }
 
   const valuationById = new Map();
-  for (const row of twseValuation ?? []) {
-    const id = String(row?.Code ?? '').trim();
-    if (!isDerivedSymbolId(id)) continue;
-    valuationById.set(id, row);
+  for (const source of [
+    { rows: tpexValuation, market: 'tpex' },
+    { rows: twseValuation, market: 'twse' },
+  ]) {
+    for (const row of source.rows ?? []) {
+      const id = String(row?.Code ?? '').trim();
+      if (!isDerivedSymbolId(id)) continue;
+      valuationById.set(id, { row, market: source.market });
+    }
   }
-  for (const [id, row] of [...valuationById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [id, { row, market }] of [...valuationById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const didWrite = await upsertFundamental(rootDir, {
       id,
       name: row.Name ?? '',
-      market: 'twse',
+      market,
     }, 'valuation', [
       ymd,
       compactNumber(row.PEratio),
@@ -783,7 +833,7 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     ], DEFAULT_VALUATION_WINDOW);
     if (didWrite) written.fundamentals += 1;
   }
-  if (twseValuation !== null) {
+  if (twseValuation !== null || tpexValuation !== null) {
     written.fundamentals += await reconcileFundamentalPeriod(rootDir, 'valuation', ymd, new Set(valuationById.keys()));
   }
 
