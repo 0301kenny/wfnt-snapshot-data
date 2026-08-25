@@ -11,11 +11,13 @@ import {
   applyDailyDate,
   isTpexDailyQuotesTradingDay,
   isTwseMiIndexTradingDay,
+  parseTpexPeHist,
   parseTpexDailyQuotesHist,
   parseTpexInstiHist,
   parseTpexMarginHist,
   parseTwseMiIndexHist,
   parseTwseMiMargnHist,
+  parseTwseBwibbuHist,
   parseTwseT86Hist,
 } from './lib/derived.mjs';
 import { yyyyOf } from './lib/date.mjs';
@@ -201,6 +203,7 @@ export async function runBackfill({
     let miIndexBytes = null;
     let t86Bytes = null;
     let miMargnBytes = null;
+    let bwibbuBytes = null;
     if (twseOpenApiCloseExists) {
       summary.openApiDays += 1;
       twseTrading = true;
@@ -218,6 +221,8 @@ export async function runBackfill({
     if (twseTrading) {
       t86Bytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_t86_hist, iso, fetchOptions);
       parseTwseT86Hist(parseJsonBytes(t86Bytes, 'T86'));
+      bwibbuBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_bwibbu_hist, iso, fetchOptions);
+      parseTwseBwibbuHist(parseJsonBytes(bwibbuBytes, 'BWIBBU_d'));
       if (!twseOpenApiCloseExists) {
         miMargnBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_mi_margn_hist, iso, fetchOptions);
         parseTwseMiMargnHist(parseJsonBytes(miMargnBytes, 'MI_MARGN'));
@@ -243,6 +248,12 @@ export async function runBackfill({
         miMargnBytes,
       ));
     }
+    if (bwibbuBytes) {
+      rawWrites.push(writeRawBytesOnChange(
+        rawPath(rootDir, BACKFILL_ENDPOINTS.twse_bwibbu_hist.sourceDataset, iso),
+        bwibbuBytes,
+      ));
+    }
 
     const tpexOpenApiCloseExists = await fileExists(rawPath(rootDir, 'tpex/mainboard_close', iso));
     let tpexTrading = false;
@@ -250,6 +261,7 @@ export async function runBackfill({
     let tpexDailyBytes = null;
     let tpexInstiBytes = null;
     let tpexMarginBytes = null;
+    let tpexPeBytes = null;
     if (tpexOpenApiCloseExists) {
       summary.tpexOpenApiDays += 1;
       tpexTrading = true;
@@ -268,6 +280,11 @@ export async function runBackfill({
       }
     }
 
+    if (tpexTrading) {
+      tpexPeBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.tpex_pe_hist, iso, fetchOptions);
+      parseTpexPeHist(parseJsonBytes(tpexPeBytes, 'TPEX_PE'));
+    }
+
     if (tpexTrading && tpexDailyBytes) {
       rawWrites.push(writeRawBytesOnChange(
         rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_daily_quotes_hist.sourceDataset, iso),
@@ -284,6 +301,12 @@ export async function runBackfill({
       rawWrites.push(writeRawBytesOnChange(
         rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_margin_hist.sourceDataset, iso),
         tpexMarginBytes,
+      ));
+    }
+    if (tpexPeBytes) {
+      rawWrites.push(writeRawBytesOnChange(
+        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_pe_hist.sourceDataset, iso),
+        tpexPeBytes,
       ));
     }
     summary.rawWritten += (await Promise.all(rawWrites)).filter(Boolean).length;

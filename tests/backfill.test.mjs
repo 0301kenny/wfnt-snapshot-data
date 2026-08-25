@@ -8,12 +8,15 @@ import { buildDerived } from '../scripts/build-derived.mjs';
 import { BACKFILL_ENDPOINTS, ENDPOINTS } from '../scripts/endpoints.mjs';
 import {
   DEFAULT_SYMBOL_WINDOW,
+  DEFAULT_VALUATION_WINDOW,
   applyDailyDate,
   isTpexDailyQuotesTradingDay,
+  parseTpexPeHist,
   parseTpexDailyQuotesHist,
   parseTpexInstiHist,
   parseTpexMarginHist,
   parseTwseMiMargnHist,
+  parseTwseBwibbuHist,
   parseTwseT86Hist,
   stableDerivedString,
 } from '../scripts/lib/derived.mjs';
@@ -130,6 +133,42 @@ function t86Fixture({ code = '2330', name = '台積電', invalid = false } = {})
   };
 }
 
+// Cropped from the official 2026-08-14 BWIBBU_d response captured by smoke A.
+function bwibbuFixture({ empty = false } = {}) {
+  return {
+    stat: 'OK',
+    date: '20260814',
+    title: '個股日本益比、殖利率及股價淨值比',
+    fields: ['證券代號', '證券名稱', '收盤價', '殖利率(%)', '股利年度', '本益比', '股價淨值比', '財報年/季'],
+    data: empty ? [] : [['1101', '台泥', '24.25', '3.30', 114, '-', '0.79', '115/2']],
+    selectType: 'ALL',
+    total: empty ? 0 : 1,
+  };
+}
+
+// Cropped from official peQryDate responses captured by smoke A/B.
+function tpexPeFixture({ year = 2026, empty = false } = {}) {
+  const current = year === 2026;
+  return {
+    tables: [{
+      title: '',
+      date: current ? '115/08/14' : '110/08/16',
+      totalCount: empty ? 0 : 1,
+      fields: current
+        ? ['股票代號', '公司名稱', '本益比', '每股股利', '股利年度', '殖利率(%)', '股價淨值比', '財報年/季']
+        : ['股票代號', '公司名稱', '本益比', '每股股利', '股利年度', '殖利率(%)', '股價淨值比'],
+      data: empty ? [] : [current
+        ? ['1240', '茂生農經        ', '10.54', '0.50000000', 114, '6.17', '1.67', '115Q2']
+        : ['1240', '茂生農經        ', '11.88', '2.50000000', 109, '4.66', '1.52']],
+      summary: [],
+      notes: [],
+      stkCategory: '全部產業',
+    }],
+    date: current ? '20260814' : '20210816',
+    stat: 'ok',
+  };
+}
+
 function tpexDailyFixture({ year = 2026, empty = false, invalid = false } = {}) {
   const fields = [
     '代號', '名稱', '收盤', '漲跌', '開盤', '最高', '最低', '均價', '成交股數',
@@ -212,9 +251,11 @@ function fixtureFetcher({ calls = [], fail, tpexDailyEmpty = false } = {}) {
     MI_INDEX: jsonBytes(miIndexFixture()),
     T86: jsonBytes(t86Fixture()),
     MI_MARGN: jsonBytes(miMargnFixture()),
+    BWIBBU: jsonBytes(bwibbuFixture()),
     TPEX_DAILY_QUOTES: jsonBytes(tpexDailyFixture({ empty: tpexDailyEmpty })),
     TPEX_INSTI: jsonBytes(tpexInstiFixture()),
     TPEX_MARGIN: jsonBytes(tpexMarginFixture()),
+    TPEX_PE: jsonBytes(tpexPeFixture()),
   };
   return async (url) => {
     calls.push(url);
@@ -222,9 +263,11 @@ function fixtureFetcher({ calls = [], fail, tpexDailyEmpty = false } = {}) {
     if (url.includes('/MI_INDEX?')) return responseFor(bodies.MI_INDEX);
     if (url.includes('/fund/T86?')) return responseFor(bodies.T86);
     if (url.includes('/MI_MARGN?')) return responseFor(bodies.MI_MARGN);
+    if (url.includes('/BWIBBU_d?')) return responseFor(bodies.BWIBBU);
     if (url.includes('/afterTrading/dailyQuotes?')) return responseFor(bodies.TPEX_DAILY_QUOTES);
     if (url.includes('/insti/dailyTrade?')) return responseFor(bodies.TPEX_INSTI);
     if (url.includes('/margin/balance?')) return responseFor(bodies.TPEX_MARGIN);
+    if (url.includes('/afterTrading/peQryDate?')) return responseFor(bodies.TPEX_PE);
     throw new Error(`unexpected URL: ${url}`);
   };
 }
@@ -235,13 +278,67 @@ test('backfill endpoints remain separate from the unchanged daily endpoint list'
     'twse_mi_index_hist',
     'twse_t86_hist',
     'twse_mi_margn_hist',
+    'twse_bwibbu_hist',
     'tpex_daily_quotes_hist',
     'tpex_insti_hist',
     'tpex_margin_hist',
+    'tpex_pe_hist',
   ]);
+  assert.match(BACKFILL_ENDPOINTS.twse_bwibbu_hist.url('20260717'), /BWIBBU_d\?date=20260717&selectType=ALL/);
   assert.match(BACKFILL_ENDPOINTS.tpex_daily_quotes_hist.url('20260717'), /date=2026\/07\/17&type=EW/);
   assert.match(BACKFILL_ENDPOINTS.tpex_insti_hist.url('20260717'), /sect=EW&date=2026\/07\/17/);
   assert.match(BACKFILL_ENDPOINTS.tpex_margin_hist.url('20260717'), /date=2026\/07\/17/);
+  assert.match(BACKFILL_ENDPOINTS.tpex_pe_hist.url('20260717'), /peQryDate\?date=2026\/07\/17/);
+});
+
+test('valuation legacy parsers preserve the five-field contract across TWSE and both TPEX schemas', () => {
+  assert.deepEqual(parseTwseBwibbuHist(bwibbuFixture())[0], {
+    Code: '1101', Name: '台泥', PEratio: null, PBratio: 0.79, DividendYield: 3.3,
+  });
+  assert.deepEqual(parseTpexPeHist(tpexPeFixture())[0], {
+    Code: '1240', Name: '茂生農經', PEratio: 10.54, PBratio: 1.67, DividendYield: 6.17,
+  });
+  assert.deepEqual(parseTpexPeHist(tpexPeFixture({ year: 2021 }))[0], {
+    Code: '1240', Name: '茂生農經', PEratio: 11.88, PBratio: 1.52, DividendYield: 4.66,
+  });
+
+  const withoutOptional = tpexPeFixture();
+  const optionalIndex = withoutOptional.tables[0].fields.indexOf('每股股利');
+  withoutOptional.tables[0].fields.splice(optionalIndex, 1);
+  withoutOptional.tables[0].data[0].splice(optionalIndex, 1);
+  assert.equal(parseTpexPeHist(withoutOptional)[0].Code, '1240');
+  const missingRequired = tpexPeFixture({ year: 2021 });
+  missingRequired.tables[0].fields[2] = '漂移';
+  assert.throws(() => parseTpexPeHist(missingRequired), /missing field 本益比/);
+});
+
+test('valuation legacy parsers match official non-trading response shapes', () => {
+  assert.throws(
+    () => parseTwseBwibbuHist({ stat: '很抱歉，沒有符合條件的資料!', total: 0 }),
+    /stat is not OK/,
+  );
+  assert.deepEqual(parseTpexPeHist(tpexPeFixture({ empty: true })), []);
+});
+
+test('valuation hist readers share the daily fundamental path with TWSE openapi priority and TPEX market metadata', async () => {
+  await withTempDir(async (root) => {
+    assert.equal(DEFAULT_VALUATION_WINDOW, 1300);
+    await writeRaw(root, 'twse/bwibbu_hist', '2026-08-14', jsonBytes(bwibbuFixture()));
+    await writeRaw(root, 'twse/bwibbu_all', '2026-08-14', jsonBytes([{
+      Code: '1101', Name: 'openapi 台泥', PEratio: '7.5', PBratio: '0.8', DividendYield: '3.2',
+    }]));
+    await writeRaw(root, 'tpex/pe_hist', '2026-08-14', jsonBytes(tpexPeFixture()));
+    await applyDailyDate(root, '2026-08-14');
+
+    const twse = await readJson(root, 'data/derived/fundamentals/11/1101.json');
+    assert.equal(twse.name, 'openapi 台泥');
+    assert.equal(twse.market, 'twse');
+    assert.deepEqual(twse.valuation.rows, [[20260814, 7.5, 0.8, 3.2]]);
+    const tpex = await readJson(root, 'data/derived/fundamentals/12/1240.json');
+    assert.equal(tpex.name, '茂生農經');
+    assert.equal(tpex.market, 'tpex');
+    assert.deepEqual(tpex.valuation.rows, [[20260814, 10.54, 1.67, 6.17]]);
+  });
 });
 
 test('TPEX daily parser handles both probed field-name variants and invalid numbers', () => {
@@ -515,6 +612,14 @@ test('backfill preserves response bytes and a second fixture run is a complete n
       await readFile(join(root, 'data/raw/tpex/margin_hist/2026/2026-07-06.json')),
       jsonBytes(tpexMarginFixture()),
     );
+    assert.deepEqual(
+      await readFile(join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json')),
+      jsonBytes(bwibbuFixture()),
+    );
+    assert.deepEqual(
+      await readFile(join(root, 'data/raw/tpex/pe_hist/2026/2026-07-06.json')),
+      jsonBytes(tpexPeFixture()),
+    );
     assert.ok(calls.some((url) => url.includes('date=2026/07/06')));
     const before = await fileMap(join(root, 'data'));
     const callCount = calls.length;
@@ -589,7 +694,7 @@ test('TPEX non-trading response does not write legacy raw or fetch its detail en
   });
 });
 
-test('existing openapi raw preserves TWSE T86 behavior and skips all three TPEX legacy fetches', async () => {
+test('existing openapi raw still fetches both valuation histories while preserving TWSE T86 behavior', async () => {
   await withTempDir(async (root) => {
     await writeRaw(root, 'twse/stock_day_all', '2026-07-06', jsonBytes([{
       Code: '2330', Name: '台積電', OpeningPrice: '10', HighestPrice: '11', LowestPrice: '9', ClosingPrice: '10.5', TradeVolume: '100', Transaction: '20',
@@ -601,7 +706,11 @@ test('existing openapi raw preserves TWSE T86 behavior and skips all three TPEX 
       SecuritiesCompanyCode: '5483', CompanyName: '中美晶', Open: '1', High: '1', Low: '1', Close: '1', TradingShares: '1', TransactionNumber: '1',
     }]));
     const calls = [];
-    const t86Bytes = jsonBytes(t86Fixture());
+    const bodies = {
+      T86: jsonBytes(t86Fixture()),
+      BWIBBU: jsonBytes(bwibbuFixture()),
+      TPEX_PE: jsonBytes(tpexPeFixture()),
+    };
     const summary = await runBackfill({
       rootDir: root,
       fromIso: '2026-07-06',
@@ -609,8 +718,10 @@ test('existing openapi raw preserves TWSE T86 behavior and skips all three TPEX 
       delayMs: 0,
       fetchImpl: async (url) => {
         calls.push(url);
-        assert.match(url, /\/fund\/T86\?/);
-        return responseFor(t86Bytes);
+        if (url.includes('/fund/T86?')) return responseFor(bodies.T86);
+        if (url.includes('/BWIBBU_d?')) return responseFor(bodies.BWIBBU);
+        if (url.includes('/afterTrading/peQryDate?')) return responseFor(bodies.TPEX_PE);
+        throw new Error(`unexpected URL: ${url}`);
       },
       sleepImpl: async () => {},
       logger: silentLogger,
@@ -618,9 +729,11 @@ test('existing openapi raw preserves TWSE T86 behavior and skips all three TPEX 
     });
     assert.equal(summary.openApiDays, 1);
     assert.equal(summary.tpexOpenApiDays, 1);
-    assert.equal(calls.length, 1);
-    assert.equal(calls.some((url) => url.includes('www.tpex.org.tw')), false);
-    assert.deepEqual(await readFile(join(root, 'data/raw/twse/t86_hist/2026/2026-07-06.json')), t86Bytes);
+    assert.equal(calls.length, 3);
+    assert.equal(calls.filter((url) => url.includes('www.tpex.org.tw')).length, 1);
+    assert.deepEqual(await readFile(join(root, 'data/raw/twse/t86_hist/2026/2026-07-06.json')), bodies.T86);
+    assert.deepEqual(await readFile(join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json')), bodies.BWIBBU);
+    assert.deepEqual(await readFile(join(root, 'data/raw/tpex/pe_hist/2026/2026-07-06.json')), bodies.TPEX_PE);
     const symbol = await readJson(root, 'data/derived/symbols/23/2330.json');
     assert.deepEqual(symbol.rows[0], [20260706, 10, 11, 9, 10.5, 100, 20, 30, 40, 9999, 1200, 400, 300]);
   });

@@ -117,6 +117,10 @@ export const BACKFILL_ENDPOINTS = {
     sourceDataset: 'twse/mi_margn_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${ymd}&selectType=ALL&response=json`,
   },
+  twse_bwibbu_hist: {
+    sourceDataset: 'twse/bwibbu_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d?date=${ymd}&selectType=ALL&response=json`,
+  },
   tpex_daily_quotes_hist: {
     sourceDataset: 'tpex/daily_quotes_hist',
     url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&type=EW&response=json`,
@@ -128,6 +132,10 @@ export const BACKFILL_ENDPOINTS = {
   tpex_margin_hist: {
     sourceDataset: 'tpex/margin_hist',
     url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/margin/balance?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&response=json`,
+  },
+  tpex_pe_hist: {
+    sourceDataset: 'tpex/pe_hist',
+    url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/afterTrading/peQryDate?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&response=json`,
   },
 };
 
