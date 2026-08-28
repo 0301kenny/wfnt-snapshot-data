@@ -102,9 +102,17 @@ export const ENDPOINTS = [
   },
 ];
 
-// Backfill-only TWSE and TPEX legacy endpoints. These are intentionally separate from
+// Backfill-only official historical endpoints. These are intentionally separate from
 // ENDPOINTS so scripts/run.mjs never includes them in the daily pipeline.
 export const BACKFILL_ENDPOINTS = {
+  twse_monthly_revenue_hist: {
+    sourceDataset: 'twse/monthly_revenue_hist',
+    url: (rocYear, month, variant) => `https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_${rocYear}_${month}_${variant}.html`,
+  },
+  tpex_monthly_revenue_hist: {
+    sourceDataset: 'tpex/monthly_revenue_hist',
+    url: (rocYear, month, variant) => `https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_${rocYear}_${month}_${variant}.html`,
+  },
   twse_mi_index_hist: {
     sourceDataset: 'twse/mi_index_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=${ymd}&type=ALLBUT0999&response=json`,

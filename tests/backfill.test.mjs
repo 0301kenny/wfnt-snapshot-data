@@ -275,6 +275,8 @@ function fixtureFetcher({ calls = [], fail, tpexDailyEmpty = false } = {}) {
 test('backfill endpoints remain separate from the unchanged daily endpoint list', () => {
   assert.equal(ENDPOINTS.length, 11);
   assert.deepEqual(Object.keys(BACKFILL_ENDPOINTS), [
+    'twse_monthly_revenue_hist',
+    'tpex_monthly_revenue_hist',
     'twse_mi_index_hist',
     'twse_t86_hist',
     'twse_mi_margn_hist',
@@ -284,6 +286,16 @@ test('backfill endpoints remain separate from the unchanged daily endpoint list'
     'tpex_margin_hist',
     'tpex_pe_hist',
   ]);
+  assert.equal(BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.sourceDataset, 'twse/monthly_revenue_hist');
+  assert.equal(BACKFILL_ENDPOINTS.tpex_monthly_revenue_hist.sourceDataset, 'tpex/monthly_revenue_hist');
+  assert.equal(
+    BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.url(115, 7, 1),
+    'https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_115_7_1.html',
+  );
+  assert.equal(
+    BACKFILL_ENDPOINTS.tpex_monthly_revenue_hist.url(110, 8, 0),
+    'https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_110_8_0.html',
+  );
   assert.match(BACKFILL_ENDPOINTS.twse_bwibbu_hist.url('20260717'), /BWIBBU_d\?date=20260717&selectType=ALL/);
   assert.match(BACKFILL_ENDPOINTS.tpex_daily_quotes_hist.url('20260717'), /date=2026\/07\/17&type=EW/);
   assert.match(BACKFILL_ENDPOINTS.tpex_insti_hist.url('20260717'), /sect=EW&date=2026\/07\/17/);

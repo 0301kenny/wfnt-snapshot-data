@@ -1,7 +1,7 @@
 import { rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { applyDailyDate, applyMonthlyRevenue, applyTdccWeek } from './lib/derived.mjs';
-import { listCsvGzDates, listJsonDates } from './lib/io.mjs';
+import { listCsvGzDates, listHtmlMonths, listJsonDates } from './lib/io.mjs';
 
 const DAILY_SOURCES = [
   'twse/mi_index',
@@ -22,7 +22,12 @@ const DAILY_SOURCES = [
   'tpex/pe_hist',
 ];
 
-const MONTHLY_SOURCES = ['twse/monthly_revenue', 'tpex/monthly_revenue'];
+const MONTHLY_SOURCES = [
+  { sourceDataset: 'twse/monthly_revenue', listMonths: listJsonMonths },
+  { sourceDataset: 'tpex/monthly_revenue', listMonths: listJsonMonths },
+  { sourceDataset: 'twse/monthly_revenue_hist', listMonths: listHtmlMonths },
+  { sourceDataset: 'tpex/monthly_revenue_hist', listMonths: listHtmlMonths },
+];
 
 async function listJsonMonths(dir) {
   try {
@@ -75,7 +80,9 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 
   const monthlyMonths = new Set();
   for (const source of MONTHLY_SOURCES) {
-    for (const month of await listJsonMonths(join(rootDir, 'data', 'raw', source))) monthlyMonths.add(month);
+    for (const month of await source.listMonths(join(rootDir, 'data', 'raw', source.sourceDataset))) {
+      monthlyMonths.add(month);
+    }
   }
   const sortedMonthlyMonths = [...monthlyMonths].sort();
   for (const month of sortedMonthlyMonths) {
