@@ -13,6 +13,19 @@ const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 
 const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
 const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
+const MOPS_REVENUE_FIELDS = [
+  '公司代號',
+  '公司名稱',
+  '營業收入-當月營收',
+  '營業收入-上月營收',
+  '營業收入-去年當月營收',
+  '營業收入-上月比較增減(%)',
+  '營業收入-去年同月增減(%)',
+  '累計營業收入-當月累計營收',
+  '累計營業收入-去年累計營收',
+  '累計營業收入-前期比較增減(%)',
+  '備註',
+];
 const TPEX_INSTI_FIELDS = {
   ff: 'ForeignInvestorsIncludeMainlandAreaInvestors-Difference',
   ft: 'SecuritiesInvestmentTrustCompanies-Difference',
@@ -64,6 +77,71 @@ function compactNumber(value) {
   if (text === '' || text === '--') return null;
   const number = Number(text);
   return Number.isFinite(number) ? number : null;
+}
+
+function decodeHtmlEntities(value) {
+  return value.replace(/&(#\d+|#x[\da-f]+|nbsp|amp|lt|gt|quot|apos);/gi, (entity, token) => {
+    const lower = token.toLowerCase();
+    if (lower === 'nbsp') return ' ';
+    if (lower === 'amp') return '&';
+    if (lower === 'lt') return '<';
+    if (lower === 'gt') return '>';
+    if (lower === 'quot') return '"';
+    if (lower === 'apos') return "'";
+    const radix = lower.startsWith('#x') ? 16 : 10;
+    const digits = lower.slice(radix === 16 ? 2 : 1);
+    const codePoint = Number.parseInt(digits, radix);
+    return Number.isFinite(codePoint) ? String.fromCodePoint(codePoint) : entity;
+  });
+}
+
+function mopsCellText(value) {
+  return decodeHtmlEntities(value.replace(/<[^>]*>/g, '')).trim();
+}
+
+function decodeMopsHtml(bytes) {
+  try {
+    return new TextDecoder('big5', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('MOPS monthly revenue: invalid big5 HTML');
+  }
+}
+
+export function parseMopsMonthlyRevenue(bytes, rocMonth) {
+  const period = String(rocMonth ?? '');
+  if (!/^\d{5}$/.test(period) || Number(period.slice(-2)) < 1 || Number(period.slice(-2)) > 12) {
+    throw new Error(`MOPS monthly revenue: invalid ROC month ${rocMonth}`);
+  }
+  const html = decodeMopsHtml(bytes);
+  const rows = [];
+  for (const rowMatch of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...rowMatch[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)]
+      .map((match) => mopsCellText(match[1]));
+    if (!/^\d{4}$/.test(cells[0] ?? '')) continue;
+    if (cells.length !== MOPS_REVENUE_FIELDS.length) {
+      throw new Error(`MOPS monthly revenue: company ${cells[0]} has ${cells.length} columns, expected 11`);
+    }
+    const row = Object.fromEntries(MOPS_REVENUE_FIELDS.map((field, index) => {
+      if (index >= 2 && index <= 9) return [field, compactNumber(cells[index])];
+      return [field, cells[index]];
+    }));
+    row['資料年月'] = period;
+    rows.push(row);
+  }
+  return rows;
+}
+
+export function validateMopsMonthlyRevenueHtml(bytes, rocMonth) {
+  if (!bytes || bytes.length <= 1024) {
+    throw new Error(`MOPS monthly revenue: response too short (${bytes?.length ?? 0} bytes)`);
+  }
+  const html = decodeMopsHtml(bytes);
+  if (!/營業收入統計表/.test(html)) {
+    throw new Error('MOPS monthly revenue: response title marker missing');
+  }
+  const rows = parseMopsMonthlyRevenue(bytes, rocMonth);
+  if (rows.length === 0) throw new Error('MOPS monthly revenue: response has 0 data rows');
+  return rows;
 }
 
 function requiredFieldIndexes(fields, mapping, label) {
@@ -320,6 +398,30 @@ async function readTextRaw(rootDir, sourceDataset, date) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+async function readMopsMonthlyRevenueRaw(rootDir, sourceDataset, monthKey) {
+  const rocMonth = `${Number(monthKey.slice(0, 4)) - 1911}${monthKey.slice(5)}`;
+  const rows = [];
+  let found = false;
+  for (const variant of [0, 1]) {
+    const path = join(
+      rootDir,
+      'data',
+      'raw',
+      sourceDataset,
+      monthKey.slice(0, 4),
+      `${monthKey}_${variant}.html`,
+    );
+    try {
+      const bytes = await readFile(path);
+      found = true;
+      rows.push(...validateMopsMonthlyRevenueHtml(bytes, rocMonth));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+  }
+  return found ? rows : null;
 }
 
 async function readExistingJson(path, fallback) {
@@ -871,15 +973,28 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
 export async function applyMonthlyRevenue(rootDir, monthKey, { revenueWindow = DEFAULT_REVENUE_WINDOW } = {}) {
   const month = Number(monthKey.replace('-', ''));
   const sources = [
-    { sourceDataset: 'twse/monthly_revenue', market: 'twse' },
-    { sourceDataset: 'tpex/monthly_revenue', market: 'tpex' },
+    {
+      sourceDataset: 'twse/monthly_revenue',
+      histDataset: 'twse/monthly_revenue_hist',
+      market: 'twse',
+    },
+    {
+      sourceDataset: 'tpex/monthly_revenue',
+      histDataset: 'tpex/monthly_revenue_hist',
+      market: 'tpex',
+    },
   ];
   const revenueById = new Map();
   for (const source of sources) {
-    const rows = await readJsonIfExists(
+    const openApiRows = await readJsonIfExists(
       join(rootDir, 'data', 'raw', source.sourceDataset, monthKey.slice(0, 4), `${monthKey}.json`),
       null,
     );
+    const histRows = openApiRows === null
+      ? await readMopsMonthlyRevenueRaw(rootDir, source.histDataset, monthKey)
+      : null;
+    const rows = openApiRows !== null ? openApiRows : histRows;
+    const selectedDataset = openApiRows !== null ? source.sourceDataset : source.histDataset;
     const droppedByMonth = new Map();
     for (const row of rows ?? []) {
       const rowMonth = parseRocMonth(row?.['資料年月']);
@@ -894,7 +1009,7 @@ export async function applyMonthlyRevenue(rootDir, monthKey, { revenueWindow = D
       if (!current || source.market === 'twse') revenueById.set(id, { source, row });
     }
     for (const [rowMonth, count] of [...droppedByMonth.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-      console.warn(`[warn] derived: monthly revenue dataset=${source.sourceDataset} monthKey=${monthKey} drops rowMonth=${rowMonth} count=${count}`);
+      console.warn(`[warn] derived: monthly revenue dataset=${selectedDataset} monthKey=${monthKey} drops rowMonth=${rowMonth} count=${count}`);
     }
   }
   let written = await reconcileFundamentalPeriod(rootDir, 'revenue', month, new Set(revenueById.keys()));

@@ -2,7 +2,7 @@
 
 TW Stock Radar 的每日官方開放資料快照服務。
 
-- 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE/TPEX legacy 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
+- 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE/TPEX legacy 與 MOPS 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。
 - `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 8 個日更端點與 2 個月營收端點,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
 
@@ -29,7 +29,7 @@ Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、�
 
 `twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日。
 
-## TWSE/TPEX historical backfill
+## TWSE/TPEX daily historical backfill
 
 `scripts/backfill.mjs` 只供授權的歷史回補批次使用,不參與 `scripts/run.mjs` 日更流程。它依日抓取官方 TWSE legacy `MI_INDEX`、`T86`、`MI_MARGN`、`BWIBBU_d` 與 TPEX legacy `dailyQuotes`、`dailyTrade`、`balance`、`peQryDate`,把 response body 原樣 bytes 寫入:
 
@@ -60,6 +60,14 @@ node scripts/backfill.mjs --from 2021-07-01 --to 2021-07-31 --out ./.backfill-ou
 - `twse_monthly_revenue` (`https://openapi.twse.com.tw/v1/opendata/t187ap05_L`)
 - `tpex_monthly_revenue` (`https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O`)
 
+這兩個 OpenAPI 端點只提供最新一期。歷史月份由 backfill-only 的 `twse_monthly_revenue_hist` 與 `tpex_monthly_revenue_hist` 補位,分別使用 MOPS 官方 `sii` 與 `otc` 路徑:
+
+```text
+https://mopsov.twse.com.tw/nas/t21/{sii|otc}/t21sc03_{roc_year}_{month}_{0|1}.html
+```
+
+民國年與月份不補零;每月每市場各抓 `_0` 國內公司與 `_1` 外國企業兩份 big5 HTML。這些 backfill-only 端點不會加入 `scripts/run.mjs` 日更清單。
+
 每個平日場次都會抓取月營收,不作 freshness skip,因為同一申報月內官方內容可能陸續增加。兩者不參與市場 anchor,也不納入 `latestTradingDate`。月鍵取全列可解析 `資料年月` 的最大值,把民國 `yyyMM` 轉成西元 `YYYY-MM`;同一 raw 若夾帶其他月份或不可解析月份的列,derived 會記錄含 dataset、月鍵、列月份與筆數的 warning 並固定排除那些列,raw 權威檔仍保持官方位元組不變。
 
 Raw 路徑固定為:
@@ -67,6 +75,22 @@ Raw 路徑固定為:
 ```text
 data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json
 ```
+
+MOPS 歷史 raw 路徑固定為:
+
+```text
+data/raw/twse/monthly_revenue_hist/{yyyy}/{yyyy-mm}_{0|1}.html
+data/raw/tpex/monthly_revenue_hist/{yyyy}/{yyyy-mm}_{0|1}.html
+```
+
+每個 HTML 檔保持單一官方 response body 的原始 bytes,不轉碼、不合併、不轉成 JSON。`scripts/backfill-monthly.mjs` 以目標檔存在作 checkpoint;短回應、缺少營收統計表標題、解析失敗或 0 資料列都不落 raw。手動回補須指定月份範圍,`--delay-ms` 預設 3000:
+
+```bash
+node scripts/backfill-monthly.mjs --from 2023-08 --to 2026-07
+node scripts/backfill-monthly.mjs --from 2026-04 --to 2026-06 --out /tmp/wfnt-monthly-smoke
+```
+
+Derived 對每個市場、每個月份優先讀取既有 OpenAPI JSON;該月 OpenAPI raw 不存在時才解析兩份 MOPS hist HTML。兩條來源共用 `scripts/lib/derived.mjs` 的單一月營收轉換路徑。
 
 同月官方 body 位元組改變時覆寫同一檔並記為 `revise`;位元組相同時不寫檔。跨月則建立新檔。Manifest 條目使用月語意:
 
@@ -188,7 +212,7 @@ data/derived/market.json
 - `name` / `market`:來源列公司名稱與資料集市場。若同代號跨來源碰撞,TWSE metadata 優先;TWSE 與 TPEX 皆有估值來源。
 - `updated`:valuation 最大 `d` 轉 ISO 日期與 revenue 最大 `m` 轉該月 1 日後,取兩者較新值;因此僅有月營收時例如 `202606` 為 `2026-06-01`。此規則不依執行時間,可確定性重建。
 - `d`:西元 `yyyymmdd` 整數;`per` / `pbr` / `dy` 分別是 `PEratio` / `PBratio` / `DividendYield`。TWSE 估值採 openapi 優先、legacy fallback;TPEX 估值只有 legacy 來源。Rolling window 1300 筆。
-- `m`:西元 `yyyymm` 整數;`rev` 是 `營業收入-當月營收` 的千元原值,不換算;`yoy` / `mom` 分別是去年同月與上月比較增減百分比。Rolling window 36 筆。
+- `m`:西元 `yyyymm` 整數;`rev` 是 `營業收入-當月營收` 的千元原值,不換算;`yoy` / `mom` 分別是去年同月與上月比較增減百分比。月營收採 OpenAPI 優先、MOPS hist fallback。Rolling window 36 筆。
 - 所有數值會移除千分位逗號後轉 Number;空字串、`--`、非有限數或不可解析值為 `null`。Rows 依 `d` / `m` 升冪並以同鍵 upsert。
 
 ### Market series
@@ -226,6 +250,7 @@ data/derived/market.json
 node scripts/run.mjs
 node scripts/run.mjs --datasets=twse_mi_index,tpex_index
 node scripts/run.mjs --force
+node scripts/backfill-monthly.mjs --from 2023-08 --to 2026-07 --out /tmp/wfnt-monthly-backfill
 node scripts/build-derived.mjs
 ```
 
