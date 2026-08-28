@@ -89,7 +89,14 @@ test('MOPS parser maps all 11 columns from an exact official big5 response fragm
 });
 
 test('same official row proves case-sensitive td matching silently shifts columns', async () => {
-  const html = new TextDecoder('big5').decode(await readFile(officialFixturePath));
+  const bytes = await readFile(officialFixturePath);
+  const productionRow = parseMopsMonthlyRevenue(bytes, '11208')
+    .find((row) => row['公司代號'] === '1264');
+  assert.ok(productionRow);
+  assert.equal(productionRow['營業收入-去年同月增減(%)'], 12.4);
+  assert.notEqual(productionRow['營業收入-去年同月增減(%)'], 3669920);
+
+  const html = new TextDecoder('big5').decode(bytes);
   const rowHtml = html.match(/<tr\b[^>]*><td[^>]*>\s*1264\s*<\/td>[\s\S]*?<\/tr>/i)?.[0];
   assert.ok(rowHtml);
   const cells = (flags) => [...rowHtml.matchAll(new RegExp('<td\\b[^>]*>([\\s\\S]*?)<\\/td>', flags))]
