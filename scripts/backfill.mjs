@@ -20,7 +20,7 @@ import {
   parseTwseBwibbuHist,
   parseTwseT86Hist,
 } from './lib/derived.mjs';
-import { yyyyOf } from './lib/date.mjs';
+import { taipeiIsoDate, yyyyOf } from './lib/date.mjs';
 import { readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
 
 const USER_AGENT =
@@ -46,7 +46,12 @@ function parseArgs(argv) {
 
 function assertIso(label, value) {
   const text = String(value ?? '');
-  if (!ISO_RE.test(text) || Number.isNaN(new Date(`${text}T00:00:00Z`).getTime())) {
+  const parsed = new Date(`${text}T00:00:00Z`);
+  if (
+    !ISO_RE.test(text) ||
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== text
+  ) {
     throw new Error(`${label} must be YYYY-MM-DD, got: ${value}`);
   }
   return text;
@@ -63,6 +68,22 @@ function* isoDaysAscending(fromIso, toIso) {
     yield cursor.toISOString().slice(0, 10);
     cursor.setUTCDate(cursor.getUTCDate() + 1);
   }
+}
+
+function parseExplicitDates(value) {
+  const values = Array.isArray(value) ? value : String(value ?? '').split(',');
+  const dates = [];
+  const seen = new Set();
+  for (const value of values) {
+    const text = String(value).trim();
+    if (!text) continue;
+    const iso = assertIso('--dates', text);
+    if (!seen.has(iso)) {
+      seen.add(iso);
+      dates.push(iso);
+    }
+  }
+  return dates;
 }
 
 function parseJsonBytes(bytes, label) {
@@ -160,6 +181,7 @@ export async function runBackfill({
   rootDir = process.cwd(),
   fromIso,
   toIso,
+  dates,
   delayMs = 3000,
   symbolWindow = DEFAULT_SYMBOL_WINDOW,
   maxRetries = 3,
@@ -169,15 +191,28 @@ export async function runBackfill({
   now = () => new Date(),
 } = {}) {
   rootDir = resolve(rootDir);
-  fromIso = assertIso('--from', fromIso);
-  toIso = assertIso('--to', toIso);
-  if (fromIso > toIso) throw new Error(`--from must be <= --to, got: ${fromIso} > ${toIso}`);
+  const explicitDates = dates !== undefined;
+  if (explicitDates && (fromIso !== undefined || toIso !== undefined)) {
+    throw new Error('--dates cannot be combined with --from or --to');
+  }
+  let targetDates;
+  if (explicitDates) {
+    targetDates = parseExplicitDates(dates);
+    const today = taipeiIsoDate(now());
+    const invalid = targetDates.find((iso) => iso >= today);
+    if (invalid) throw new Error(`--dates must be before today (${today}), got: ${invalid}`);
+  } else {
+    fromIso = assertIso('--from', fromIso);
+    toIso = assertIso('--to', toIso);
+    if (fromIso > toIso) throw new Error(`--from must be <= --to, got: ${fromIso} > ${toIso}`);
+    targetDates = isoDaysAscending(fromIso, toIso);
+  }
   if (!Number.isFinite(delayMs) || delayMs < 0) throw new Error(`--delay-ms must be a non-negative number, got: ${delayMs}`);
   if (!Number.isInteger(symbolWindow) || symbolWindow <= 0) throw new Error(`--window must be a positive integer, got: ${symbolWindow}`);
   if (!Number.isInteger(maxRetries) || maxRetries < 0) throw new Error(`maxRetries must be a non-negative integer, got: ${maxRetries}`);
   if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
 
-  const checkpoint = await loadCheckpoint(rootDir);
+  const checkpoint = explicitDates ? { lastDate: null } : await loadCheckpoint(rootDir);
   const resumeAfter = checkpoint.lastDate;
   const summary = {
     trading: 0,
@@ -188,14 +223,21 @@ export async function runBackfill({
     rawWritten: 0,
     derivedSymbols: 0,
   };
-  logger.log(`[backfill] range ${fromIso}..${toIso} out=${rootDir} delay=${delayMs}ms window=${symbolWindow}${resumeAfter ? ` resumeAfter=${resumeAfter}` : ''}`);
+  if (explicitDates) summary.failures = [];
+  if (explicitDates) {
+    logger.log(`[backfill] dates ${targetDates.join(',')} out=${rootDir} delay=${delayMs}ms window=${symbolWindow}`);
+  } else {
+    logger.log(`[backfill] range ${fromIso}..${toIso} out=${rootDir} delay=${delayMs}ms window=${symbolWindow}${resumeAfter ? ` resumeAfter=${resumeAfter}` : ''}`);
+  }
 
   const fetchOptions = { delayMs, maxRetries, fetchImpl, sleepImpl, logger };
-  for (const iso of isoDaysAscending(fromIso, toIso)) {
-    if (resumeAfter && iso <= resumeAfter) {
+  for (const iso of targetDates) {
+    if (!explicitDates && resumeAfter && iso <= resumeAfter) {
       summary.resumed += 1;
       continue;
     }
+
+    try {
 
     const twseOpenApiCloseExists = await fileExists(rawPath(rootDir, 'twse/stock_day_all', iso));
     let twseTrading = false;
@@ -314,30 +356,47 @@ export async function runBackfill({
     if (!twseTrading && !tpexTrading) {
       summary.skipped += 1;
       logger.log(`[skip] ${iso} non-trading day (twse+tpex)`);
-      await saveCheckpoint(rootDir, iso, now);
+      if (!explicitDates) await saveCheckpoint(rootDir, iso, now);
       continue;
     }
 
     const written = await applyDailyDate(rootDir, iso, { symbolWindow });
-    await saveCheckpoint(rootDir, iso, now);
+    if (!explicitDates) await saveCheckpoint(rootDir, iso, now);
     summary.trading += 1;
     summary.derivedSymbols += written.symbols;
     logger.log(`[ok] ${iso} twse=${twseSource} tpex=${tpexSource} derivedWritten=${written.symbols}`);
+    } catch (error) {
+      if (!explicitDates) throw error;
+      const message = String(error?.message ?? error);
+      summary.failures.push({ date: iso, error: message });
+      logger.warn(`[fail] ${iso}: ${message}`);
+    }
   }
 
-  logger.log(`[done] trading=${summary.trading} skipped=${summary.skipped} resumed=${summary.resumed} rawWritten=${summary.rawWritten} derivedSymbolsWritten=${summary.derivedSymbols}`);
+  const done = `[done] trading=${summary.trading} skipped=${summary.skipped} resumed=${summary.resumed} rawWritten=${summary.rawWritten} derivedSymbolsWritten=${summary.derivedSymbols}`;
+  logger.log(explicitDates ? `${done} failed=${summary.failures.length}` : done);
+  if (summary.failures?.length) {
+    const error = new Error(`--dates completed with ${summary.failures.length} failure(s): ${summary.failures.map((failure) => `${failure.date} ${failure.error}`).join('; ')}`);
+    error.summary = summary;
+    throw error;
+  }
   return summary;
+}
+
+export function backfillOptionsFromArgs(args) {
+  return {
+    rootDir: String(args.out ?? process.cwd()),
+    fromIso: args.from ?? (args.dates === undefined ? '2024-01-01' : undefined),
+    toIso: args.to ?? (args.dates === undefined ? '2024-01-31' : undefined),
+    dates: args.dates,
+    delayMs: Number(args['delay-ms'] ?? 3000),
+    symbolWindow: Number(args.window ?? DEFAULT_SYMBOL_WINDOW),
+  };
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  return runBackfill({
-    rootDir: String(args.out ?? process.cwd()),
-    fromIso: args.from ?? '2024-01-01',
-    toIso: args.to ?? '2024-01-31',
-    delayMs: Number(args['delay-ms'] ?? 3000),
-    symbolWindow: Number(args.window ?? DEFAULT_SYMBOL_WINDOW),
-  });
+  return runBackfill(backfillOptionsFromArgs(args));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
