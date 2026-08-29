@@ -44,13 +44,30 @@ data/raw/tpex/margin_hist/{yyyy}/{date}.json
 data/raw/tpex/pe_hist/{yyyy}/{date}.json
 ```
 
-TWSE 與 TPEX 各自獨立判斷交易日與 openapi 是否存在。當日已有 `twse/stock_day_all` raw 時,MI_INDEX 與 MI_MARGN 不重複抓取,T86 仍會抓取以補 TWSE 法人欄位,BWIBBU_d 也一律抓取以補估值歷史;已有 `tpex/mainboard_close` raw 時則跳過 dailyQuotes、dailyTrade、balance 三個 TPEX legacy 端點,但 peQryDate 仍一律抓取。Derived 優先使用已有 openapi,只在對應 openapi 缺席時以 hist 補位,並共用日更的單一轉換路徑。回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
+TWSE 與 TPEX 各自獨立判斷交易日與 openapi 是否存在。當日已有 `twse/stock_day_all` raw 時,MI_INDEX 與 MI_MARGN 不重複抓取,T86 仍會抓取以補 TWSE 法人欄位,BWIBBU_d 也一律抓取以補估值歷史;已有 `tpex/mainboard_close` raw 時則跳過 dailyQuotes、dailyTrade、balance 三個 TPEX legacy 端點,但 peQryDate 仍一律抓取。Derived 優先使用已有 openapi,只在對應 openapi 缺席時以 hist 補位,並共用日更的單一轉換路徑。範圍回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
 
 手動用法(預設寫本 repo `data/`;`--out` 可指向 scratch root):
 
 ```bash
 node scripts/backfill.mjs --from 2021-07-01 --to 2026-06-30
 node scripts/backfill.mjs --from 2021-07-01 --to 2021-07-31 --out ./.backfill-out
+```
+
+`scripts/detect-gaps.mjs` 依市場分開計算已覆蓋日期。TWSE 覆蓋是 `mi_index_hist`、`t86_hist`、`mi_margn_hist`、`bwibbu_hist` 與 `stock_day_all` 的聯集;TPEX 覆蓋是 `daily_quotes_hist`、`insti_hist`、`margin_hist` 與 `mainboard_close` 的聯集。它會掃描工作日,再以官方 TWSE `MI_INDEX` 判定候選日是否為交易日;預設範圍是兩市場已覆蓋的最小日到最大日,`--from` / `--to` 可覆寫,`--delay-ms` 預設 3000。
+
+明確非交易日會快取到目標 root 的 `.gap-scan-cache.json`,並保留官方 `stat` 原文;請求失敗、逾時或非 200 不會寫入快取。今天與未來日期不納入候選。偵測不可與 `backfill.mjs` 併行。
+
+`backfill.mjs --dates` 只處理逗號分隔清單,繞過現有 checkpoint 且不改寫 `.backfill-progress.json`;單日失敗會繼續後續日期,最後彙總並以非 0 結束。清單不得包含今天或未來日期。偵測後直接補洞的一行原文為:
+
+```bash
+dates="$(node scripts/detect-gaps.mjs --dates-only)" && node scripts/backfill.mjs --dates "$dates"
+```
+
+隔離 root 的對應用法:
+
+```bash
+node scripts/detect-gaps.mjs --from 2026-08-01 --to 2026-08-28 --out /tmp/wfnt-gap-scan
+dates="$(node scripts/detect-gaps.mjs --dates-only --out /tmp/wfnt-gap-scan)" && node scripts/backfill.mjs --dates "$dates" --out /tmp/wfnt-gap-scan
 ```
 
 ## Monthly revenue snapshot
@@ -250,6 +267,8 @@ data/derived/market.json
 node scripts/run.mjs
 node scripts/run.mjs --datasets=twse_mi_index,tpex_index
 node scripts/run.mjs --force
+node scripts/detect-gaps.mjs
+node scripts/backfill.mjs --dates 2026-08-17,2026-08-18 --out /tmp/wfnt-daily-hole-fill
 node scripts/backfill-monthly.mjs --from 2023-08 --to 2026-07 --out /tmp/wfnt-monthly-backfill
 node scripts/build-derived.mjs
 ```

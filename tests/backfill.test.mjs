@@ -750,3 +750,97 @@ test('existing openapi raw still fetches both valuation histories while preservi
     assert.deepEqual(symbol.rows[0], [20260706, 10, 11, 9, 10.5, 100, 20, 30, 40, 9999, 1200, 400, 300]);
   });
 });
+
+test('--dates bypasses a later checkpoint without changing its bytes while range mode resumes', async () => {
+  await withTempDir(async (root) => {
+    const checkpointPath = join(root, '.backfill-progress.json');
+    const checkpointBytes = Buffer.from('{"lastDate":"2026-12-31","updatedAt":"frozen"}\n');
+    await writeFile(checkpointPath, checkpointBytes);
+    const rangeCalls = [];
+    const range = await runBackfill({
+      rootDir: root,
+      fromIso: '2026-07-06',
+      toIso: '2026-07-06',
+      delayMs: 0,
+      fetchImpl: fixtureFetcher({ calls: rangeCalls }),
+      sleepImpl: async () => {},
+      logger: silentLogger,
+      now: () => new Date('2026-08-29T00:00:00Z'),
+    });
+    assert.equal(range.resumed, 1);
+    assert.equal(range.rawWritten, 0);
+    assert.equal(rangeCalls.length, 0);
+
+    const dateCalls = [];
+    const explicit = await runBackfill({
+      rootDir: root,
+      dates: '2026-07-06',
+      delayMs: 0,
+      fetchImpl: fixtureFetcher({ calls: dateCalls }),
+      sleepImpl: async () => {},
+      logger: silentLogger,
+      now: () => new Date('2026-08-29T00:00:00Z'),
+    });
+    assert.equal(explicit.trading, 1);
+    assert.ok(explicit.rawWritten > 0);
+    assert.ok(dateCalls.length > 0);
+    assert.deepEqual(await readFile(checkpointPath), checkpointBytes);
+  });
+});
+
+test('--dates records a frozen stat failure, continues later dates, then rejects after its summary', async (t) => {
+  await withTempDir(async (root) => {
+    const calls = [];
+    const logs = [];
+    const warnings = [];
+    const goodFetcher = fixtureFetcher({ calls });
+    const nonTradingBytes = await readFile(new URL('./fixtures/twse-mi-index-non-trading.json', import.meta.url));
+    let caught;
+    try {
+      await runBackfill({
+        rootDir: root,
+        dates: '2026-07-06,2026-07-07',
+        delayMs: 0,
+        maxRetries: 0,
+        fetchImpl: async (url) => {
+          if (url.includes('/MI_MARGN?date=20260706')) {
+            calls.push(url);
+            return responseFor(nonTradingBytes);
+          }
+          return goodFetcher(url);
+        },
+        sleepImpl: async () => {},
+        logger: {
+          log(message) { logs.push(message); },
+          warn(message) { warnings.push(message); },
+        },
+        now: () => new Date('2026-08-29T00:00:00Z'),
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.match(caught?.message ?? '', /--dates completed with 1 failure/);
+    assert.equal(caught.summary.failures[0].date, '2026-07-06');
+    assert.match(caught.summary.failures[0].error, /MI_MARGN: stat is not OK/);
+    assert.ok(calls.some((url) => url.includes('date=20260707')));
+    assert.ok(calls.some((url) => url.includes('date=2026/07/07')));
+    assert.ok(warnings.some((line) => line.includes('[fail] 2026-07-06')));
+    assert.ok(logs.some((line) => line.includes('[done]') && line.includes('failed=1')));
+    t.diagnostic(warnings.find((line) => line.includes('[fail] 2026-07-06')));
+    t.diagnostic(logs.find((line) => line.includes('[ok] 2026-07-07')));
+    t.diagnostic(logs.find((line) => line.includes('[done]')));
+  });
+});
+
+test('--dates rejects today and future dates before fetching', async () => {
+  let calls = 0;
+  await assert.rejects(runBackfill({
+    dates: '2026-08-29,2026-08-30',
+    delayMs: 0,
+    fetchImpl: async () => { calls += 1; },
+    sleepImpl: async () => {},
+    logger: silentLogger,
+    now: () => new Date('2026-08-29T00:00:00Z'),
+  }), /must be before today \(2026-08-29\)/);
+  assert.equal(calls, 0);
+});
