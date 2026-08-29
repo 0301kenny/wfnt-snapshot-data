@@ -1,6 +1,6 @@
 import { rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { applyDailyDate, applyMonthlyRevenue, applyTdccWeek } from './lib/derived.mjs';
+import { applyDailyDate, applyMonthlyRevenue, applyQuarterlyFinancials, applyTdccWeek } from './lib/derived.mjs';
 import { listCsvGzDates, listHtmlMonths, listJsonDates } from './lib/io.mjs';
 
 const DAILY_SOURCES = [
@@ -29,6 +29,11 @@ const MONTHLY_SOURCES = [
   { sourceDataset: 'tpex/monthly_revenue_hist', listMonths: listHtmlMonths },
 ];
 
+const QUARTERLY_SOURCES = [
+  'twse/quarterly_fin_hist',
+  'tpex/quarterly_fin_hist',
+];
+
 async function listJsonMonths(dir) {
   try {
     const years = await readdir(dir, { withFileTypes: true });
@@ -41,6 +46,24 @@ async function listJsonMonths(dir) {
       }
     }
     return months.sort();
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function listHtmlSeasons(dir) {
+  try {
+    const years = await readdir(dir, { withFileTypes: true });
+    const seasons = [];
+    for (const year of years) {
+      if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
+      const files = await readdir(join(dir, year.name), { withFileTypes: true });
+      for (const file of files) {
+        if (file.isFile() && /^\d{4}-Q[1-4]\.html$/.test(file.name)) seasons.push(file.name.slice(0, -5));
+      }
+    }
+    return seasons.sort();
   } catch (error) {
     if (error.code === 'ENOENT') return [];
     throw error;
@@ -89,19 +112,36 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     await applyMonthlyRevenue(rootDir, month);
   }
 
+  const quarterlySeasons = new Set();
+  for (const source of QUARTERLY_SOURCES) {
+    for (const season of await listHtmlSeasons(join(rootDir, 'data', 'raw', source))) {
+      quarterlySeasons.add(season);
+    }
+  }
+  const sortedQuarterlySeasons = [...quarterlySeasons].sort();
+  for (const season of sortedQuarterlySeasons) {
+    await applyQuarterlyFinancials(rootDir, season);
+  }
+
   const weeks = await listCsvGzDates(join(rootDir, 'data', 'raw', 'tdcc'));
   for (const week of weeks) {
     await applyTdccWeek(rootDir, week);
   }
 
   const files = await countFiles(derivedDir);
-  return { dailyDates: sortedDailyDates.length, monthlyMonths: sortedMonthlyMonths.length, tdccWeeks: weeks.length, files };
+  return {
+    dailyDates: sortedDailyDates.length,
+    monthlyMonths: sortedMonthlyMonths.length,
+    quarterlySeasons: sortedQuarterlySeasons.length,
+    tdccWeeks: weeks.length,
+    files,
+  };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} monthly_months=${summary.monthlyMonths} tdcc_weeks=${summary.tdccWeeks} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);

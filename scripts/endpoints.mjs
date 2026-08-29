@@ -113,6 +113,16 @@ export const BACKFILL_ENDPOINTS = {
     sourceDataset: 'tpex/monthly_revenue_hist',
     url: (rocYear, month, variant) => `https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_${rocYear}_${month}_${variant}.html`,
   },
+  twse_quarterly_fin_hist: {
+    sourceDataset: 'twse/quarterly_fin_hist',
+    url: 'https://mopsov.twse.com.tw/mops/web/ajax_t163sb04',
+    typek: 'sii',
+  },
+  tpex_quarterly_fin_hist: {
+    sourceDataset: 'tpex/quarterly_fin_hist',
+    url: 'https://mopsov.twse.com.tw/mops/web/ajax_t163sb04',
+    typek: 'otc',
+  },
   twse_mi_index_hist: {
     sourceDataset: 'twse/mi_index_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=${ymd}&type=ALLBUT0999&response=json`,

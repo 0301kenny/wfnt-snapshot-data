@@ -1,0 +1,223 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { runQuarterlyBackfill } from '../scripts/backfill-quarterly.mjs';
+import { buildDerived } from '../scripts/build-derived.mjs';
+import {
+  applyQuarterlyFinancials,
+  MOPS_QUARTERLY_FIELDS,
+  parseMopsQuarterlyFinHtml,
+  reconcileFundamentalPeriod,
+} from '../scripts/lib/derived.mjs';
+import { GENERAL_HEADER, makeOtcQuarterlyFixture, makeSiiQuarterlyFixture } from './fixtures/mops-quarterly-2025.mjs';
+
+const repoRoot = fileURLToPath(new URL('../', import.meta.url));
+const silentLogger = { log() {}, warn() {} };
+
+async function withTempDir(fn) {
+  const root = await mkdtemp(join(tmpdir(), 'wfnt-quarterly-test-'));
+  try { return await fn(root); } finally { await rm(root, { recursive: true, force: true }); }
+}
+
+async function writeRaw(root, market, seasonKey, bytes) {
+  const path = join(root, 'data', 'raw', market, 'quarterly_fin_hist', seasonKey.slice(0, 4), `${seasonKey}.html`);
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, bytes);
+  return path;
+}
+
+async function readFundamental(root, id) {
+  return JSON.parse(await readFile(join(root, 'data', 'derived', 'fundamentals', id.slice(0, 2), `${id}.json`), 'utf8'));
+}
+
+function responseFor(bytes, status = 200) {
+  return { status, ok: status >= 200 && status < 300, async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); } };
+}
+
+function htmlRows(bytes) {
+  const text = (value) => value.replace(/<[^>]*>/g, '').trim();
+  return [...bytes.toString('utf8').matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)]
+    .map((match) => [...match[1].matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)].map((cell) => text(cell[1])));
+}
+
+function firstHeaderMissing(bytes) {
+  const first = htmlRows(bytes).find((row) => row[0] === '公司代號');
+  const required = [
+    MOPS_QUARTERLY_FIELDS.revenue,
+    MOPS_QUARTERLY_FIELDS.grossProfit,
+    MOPS_QUARTERLY_FIELDS.operatingIncome,
+    MOPS_QUARTERLY_FIELDS.netIncome,
+  ];
+  return required.filter((field) => !first.includes(field));
+}
+
+function runCli(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['scripts/backfill-quarterly.mjs', ...args], { cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test('MOPS quarterly parser selects the general-industry table by header text in sii and otc', () => {
+  const sii = parseMopsQuarterlyFinHtml(makeSiiQuarterlyFixture(1));
+  const otc = parseMopsQuarterlyFinHtml(makeOtcQuarterlyFixture());
+  assert.equal(GENERAL_HEADER.length, 30);
+  assert.deepEqual(sii.find((row) => row.id === '2330'), {
+    id: '2330', name: '台積電', revenue: 839253664, grossProfit: 493395076, operatingIncome: 407080808, netIncome: 360732661,
+  });
+  assert.deepEqual(otc, [{ id: '1240', name: '茂生農經', revenue: 1347115, grossProfit: 201369, operatingIncome: 77907, netIncome: 99732 }]);
+});
+
+test('HF5 golden anchors produce all six exact single-quarter margin groups', async () => {
+  await withTempDir(async (root) => {
+    await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
+    await writeRaw(root, 'twse', '2025-Q2', makeSiiQuarterlyFixture(2));
+    await applyQuarterlyFinancials(root, '2025-Q1');
+    await applyQuarterlyFinancials(root, '2025-Q2');
+    assert.deepEqual((await readFundamental(root, '2330')).quarterly.rows, [[20251, 58.79, 48.51, 42.98], [20252, 58.62, 49.63, 42.57]]);
+    assert.deepEqual((await readFundamental(root, '1101')).quarterly.rows, [[20251, 16.86, 6.58, 2.2], [20252, 15.12, 3.15, 2.07]]);
+  });
+});
+
+test('Q2 cumulative negative control differs from the single-quarter rows', () => {
+  const round2 = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+  const rates = (row) => [row.grossProfit, row.operatingIncome, row.netIncome].map((value) => round2((value / row.revenue) * 100));
+  const q2 = parseMopsQuarterlyFinHtml(makeSiiQuarterlyFixture(2));
+  assert.deepEqual(rates(q2.find((row) => row.id === '2330')), [58.7, 49.1, 42.76]);
+  assert.deepEqual(rates(q2.find((row) => row.id === '1101')), [15.99, 4.86, 2.13]);
+  assert.notDeepEqual([58.7, 49.1, 42.76], [58.62, 49.63, 42.57]);
+  assert.notDeepEqual([15.99, 4.86, 2.13], [15.12, 3.15, 2.07]);
+});
+
+test('taking the first 公司代號 header fails in both markets while production selection succeeds', () => {
+  const sii = makeSiiQuarterlyFixture(1);
+  const otc = makeOtcQuarterlyFixture();
+  assert.deepEqual(firstHeaderMissing(sii), [
+    MOPS_QUARTERLY_FIELDS.revenue,
+    MOPS_QUARTERLY_FIELDS.grossProfit,
+    MOPS_QUARTERLY_FIELDS.operatingIncome,
+    MOPS_QUARTERLY_FIELDS.netIncome,
+  ]);
+  assert.deepEqual(firstHeaderMissing(otc), [
+    MOPS_QUARTERLY_FIELDS.revenue,
+    MOPS_QUARTERLY_FIELDS.grossProfit,
+    MOPS_QUARTERLY_FIELDS.operatingIncome,
+  ]);
+  assert.equal(parseMopsQuarterlyFinHtml(sii).length, 2);
+  assert.equal(parseMopsQuarterlyFinHtml(otc).length, 1);
+});
+
+test('header text indexes survive a synchronized inserted column and hard-coded index 2 does not', () => {
+  const fixture = makeSiiQuarterlyFixture(1, { insertGeneralColumn: true });
+  const generalRows = htmlRows(fixture).filter((row) => row.includes('上游新增欄位') || /^\d{4}$/.test(row[0] ?? ''));
+  assert.ok(generalRows.every((row) => row.length === 31));
+  const parsed = parseMopsQuarterlyFinHtml(fixture).find((row) => row.id === '2330');
+  assert.equal(parsed.revenue, 839253664);
+  assert.equal(parsed.grossProfit, 493395076);
+  const raw2330 = generalRows.find((row) => row[0] === '2330');
+  assert.equal(raw2330[2], '999');
+  assert.notEqual(Number(raw2330[2]), parsed.revenue);
+});
+
+test('required -- becomes null and a width-mismatched company row is excluded', () => {
+  const source = makeSiiQuarterlyFixture(1).toString('utf8');
+  const missing = Buffer.from(source.replaceAll('<td>768,392</td>', '<td>--</td>'));
+  assert.equal(parseMopsQuarterlyFinHtml(missing).find((row) => row.id === '1101').netIncome, null);
+  const short = Buffer.from(source.replace('<td>台泥</td>', ''));
+  assert.equal(parseMopsQuarterlyFinHtml(short).some((row) => row.id === '1101'), false);
+  assert.equal(parseMopsQuarterlyFinHtml(short).some((row) => row.id === '2330'), true);
+});
+
+test('reconcile preserves quarterly-only files and quarterly surviving removal of the last old row', async () => {
+  await withTempDir(async (root) => {
+    const path = join(root, 'data', 'derived', 'fundamentals', '23', '2330.json');
+    await mkdir(dirname(path), { recursive: true });
+    const quarterly = { cols: ['q', 'gm', 'om', 'nm'], rows: [[20251, 58.79, 48.51, 42.98]] };
+    await writeFile(path, `${JSON.stringify({ id: '2330', name: '台積電', market: 'twse', updated: null, valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [] }, revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] }, quarterly }, null, 2)}\n`);
+    await reconcileFundamentalPeriod(root, 'valuation', 20250101, new Set());
+    await access(path);
+    assert.deepEqual((await readFundamental(root, '2330')).quarterly, quarterly);
+    const withRevenue = await readFundamental(root, '2330');
+    withRevenue.revenue.rows = [[202506, 1, 2, 3]];
+    await writeFile(path, `${JSON.stringify(withRevenue, null, 2)}\n`);
+    await reconcileFundamentalPeriod(root, 'revenue', 202506, new Set());
+    await access(path);
+    const after = await readFundamental(root, '2330');
+    assert.deepEqual(after.revenue.rows, []);
+    assert.deepEqual(after.quarterly, quarterly);
+  });
+});
+
+test('Q2 raw without same-year Q1 produces no quarterly rows', async () => {
+  await withTempDir(async (root) => {
+    await writeRaw(root, 'twse', '2025-Q2', makeSiiQuarterlyFixture(2));
+    await applyQuarterlyFinancials(root, '2025-Q2');
+    await assert.rejects(readFundamental(root, '2330'), /ENOENT/);
+    await assert.rejects(readFundamental(root, '1101'), /ENOENT/);
+  });
+});
+
+test('quarterly backfill posts exact form, preserves bytes, checkpoints, and rejects non-Q1 starts', async () => {
+  await withTempDir(async (root) => {
+    const calls = [];
+    const sii = makeSiiQuarterlyFixture(1);
+    const otc = makeOtcQuarterlyFixture();
+    const first = await runQuarterlyBackfill({ rootDir: root, fromSeason: '2025-Q1', toSeason: '2025-Q1', delayMs: 0, sleepImpl: async () => {}, fetchImpl: async (url, options) => { calls.push({ url, options }); return responseFor(options.body.includes('TYPEK=sii') ? sii : otc); }, logger: silentLogger });
+    assert.deepEqual(first, { seasons: 1, requests: 2, skipped: 0, rawWritten: 2, rows: 3 });
+    assert.equal(calls.every((call) => call.options.method === 'POST'), true);
+    assert.deepEqual(calls.map((call) => call.options.body), [
+      'encodeURIComponent=1&step=1&firstin=1&off=1&isQuery=Y&TYPEK=sii&year=114&season=01',
+      'encodeURIComponent=1&step=1&firstin=1&off=1&isQuery=Y&TYPEK=otc&year=114&season=01',
+    ]);
+    assert.deepEqual(await readFile(join(root, 'data/raw/twse/quarterly_fin_hist/2025/2025-Q1.html')), sii);
+    const second = await runQuarterlyBackfill({ rootDir: root, fromSeason: '2025-Q1', toSeason: '2025-Q1', delayMs: 0, sleepImpl: async () => {}, fetchImpl: async () => assert.fail('checkpoint should skip fetch'), logger: silentLogger });
+    assert.deepEqual(second, { seasons: 1, requests: 0, skipped: 2, rawWritten: 0, rows: 0 });
+    await assert.rejects(runQuarterlyBackfill({ rootDir: root, fromSeason: '2025-Q2', toSeason: '2025-Q2' }), /--from must start at Q1/);
+  });
+});
+
+test('CLI rejects a non-Q1 --from before making any request', async () => {
+  const result = await runCli(['--from', '2025-Q2', '--to', '2025-Q2', '--out', tmpdir()]);
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /--from must start at Q1 because later quarters require same-year cumulative differencing/);
+  assert.equal(result.stdout, '');
+});
+
+test('isolated backfill to applyQuarterlyFinancials produces raw and derived quarterly rows', async () => {
+  await withTempDir(async (root) => {
+    const sii = makeSiiQuarterlyFixture(1);
+    const otc = makeOtcQuarterlyFixture();
+    await runQuarterlyBackfill({ rootDir: root, fromSeason: '2025-Q1', toSeason: '2025-Q1', delayMs: 0, sleepImpl: async () => {}, fetchImpl: async (_url, options) => responseFor(options.body.includes('TYPEK=sii') ? sii : otc), logger: silentLogger });
+    await applyQuarterlyFinancials(root, '2025-Q1');
+    assert.deepEqual((await readFundamental(root, '2330')).quarterly.rows, [[20251, 58.79, 48.51, 42.98]]);
+    assert.deepEqual((await readFundamental(root, '1240')).quarterly.rows, [[20251, 14.95, 5.78, 7.4]]);
+  });
+});
+
+test('full build discovers quarters while incremental quarterly preserves old sequence bytes and updated', async () => {
+  await withTempDir(async (root) => {
+    await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
+    await writeRaw(root, 'twse', '2025-Q2', makeSiiQuarterlyFixture(2));
+    const path = join(root, 'data', 'derived', 'fundamentals', '23', '2330.json');
+    await mkdir(dirname(path), { recursive: true });
+    const existing = { id: '2330', name: '台積電', market: 'twse', updated: '2026-07-01', valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [[20260630, 25.1, 5.2, 1.8]] }, revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [[202607, 1, 2, 3]] } };
+    await writeFile(path, `${JSON.stringify(existing, null, 2)}\n`);
+    const before = JSON.stringify({ valuation: existing.valuation, revenue: existing.revenue });
+    await applyQuarterlyFinancials(root, '2025-Q1');
+    const incremental = await readFundamental(root, '2330');
+    assert.equal(JSON.stringify({ valuation: incremental.valuation, revenue: incremental.revenue }), before);
+    assert.equal(incremental.updated, '2026-07-01');
+    const summary = await buildDerived({ rootDir: root });
+    assert.equal(summary.quarterlySeasons, 2);
+    assert.deepEqual((await readFundamental(root, '2330')).quarterly.rows, [[20251, 58.79, 48.51, 42.98], [20252, 58.62, 49.63, 42.57]]);
+  });
+});
