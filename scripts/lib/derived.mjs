@@ -756,11 +756,11 @@ async function listFundamentalPaths(rootDir) {
   }
 }
 
-export async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds) {
+export async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds, { market } = {}) {
   let written = 0;
   for (const path of await listFundamentalPaths(rootDir)) {
     const current = await readExistingJson(path, null);
-    if (!current || presentIds.has(String(current.id))) continue;
+    if (!current || (market !== undefined && current.market !== market) || presentIds.has(String(current.id))) continue;
     const valuationRows = current.valuation?.rows ?? [];
     const revenueRows = current.revenue?.rows ?? [];
     const quarterlyRows = current.quarterly?.rows ?? [];
@@ -1128,12 +1128,11 @@ export async function applyQuarterlyFinancials(
     { sourceDataset: 'tpex/quarterly_fin_hist', market: 'tpex' },
   ];
   const quarterlyById = new Map();
-  let foundCurrent = false;
+  const authoritativeIdsByMarket = new Map();
 
   for (const source of sources) {
     const currentRows = await readMopsQuarterlyFinRaw(rootDir, source.sourceDataset, seasonKey);
     if (currentRows === null) continue;
-    foundCurrent = true;
     const previousRows = previousSeasonKey === null
       ? null
       : await readMopsQuarterlyFinRaw(rootDir, source.sourceDataset, previousSeasonKey);
@@ -1142,6 +1141,7 @@ export async function applyQuarterlyFinancials(
       continue;
     }
     const previousById = new Map((previousRows ?? []).map((row) => [row.id, row]));
+    const authoritativeIds = new Set();
     let missingPrevious = 0;
     let invalid = 0;
     for (const current of currentRows) {
@@ -1175,6 +1175,7 @@ export async function applyQuarterlyFinancials(
         invalid += 1;
         continue;
       }
+      authoritativeIds.add(current.id);
       const currentWinner = quarterlyById.get(current.id);
       if (!currentWinner || source.market === 'twse') {
         quarterlyById.set(current.id, {
@@ -1187,10 +1188,14 @@ export async function applyQuarterlyFinancials(
     if (missingPrevious > 0 || invalid > 0) {
       console.warn(`[warn] derived: quarterly dataset=${source.sourceDataset} seasonKey=${seasonKey} missingPrevious=${missingPrevious} invalid=${invalid}`);
     }
+    authoritativeIdsByMarket.set(source.market, authoritativeIds);
   }
 
-  if (!foundCurrent) return { fundamentals: 0 };
-  let written = await reconcileFundamentalPeriod(rootDir, 'quarterly', quarterKey, new Set(quarterlyById.keys()));
+  if (authoritativeIdsByMarket.size === 0) return { fundamentals: 0 };
+  let written = 0;
+  for (const [market, presentIds] of authoritativeIdsByMarket) {
+    written += await reconcileFundamentalPeriod(rootDir, 'quarterly', quarterKey, presentIds, { market });
+  }
   for (const [id, { source, row, values }] of [...quarterlyById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const [revenue, grossProfit, operatingIncome, netIncome] = values;
     const didWrite = await upsertFundamental(rootDir, {

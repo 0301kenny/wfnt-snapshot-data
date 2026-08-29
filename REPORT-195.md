@@ -474,3 +474,178 @@ tests/run.test.mjs        |   2 +
 ```
 
 `git diff --check` 輸出為空,exit 0。
+
+## r3
+
+狀態: **READY_FOR_REVIEW**。r3 修正輪 1 完成;r3-1、r3-2 皆 PASS。未改票面、未打真實網路、未執行 repo 根目錄 `build-derived`、未寫真 `data/`、未 commit。
+
+### r3-1:按市場區分權威集合與缺席集合 — PASS
+
+`applyQuarterlyFinancials` 現在只在該市場本季 raw 存在、且 Q2～Q4 所需前季 raw 也存在並完成整批處理後,才建立該市場的 `authoritativeIds`。`reconcileFundamentalPeriod` 新增可選的 `market` scope:
+
+- 該市場集合缺席:不呼叫該市場 reconcile,既有季度列與 fundamentals 檔保留。
+- 該市場集合存在但為空:仍呼叫該市場 reconcile,可移除上游 revise 後不再出現的舊季度列。
+- 該市場集合非空:只在相同 `market` metadata 的 fundamentals 檔內以權威 ids 收斂。
+- 未帶 `market` 的 valuation/revenue 既有呼叫維持原本全域語意。
+
+驗收 1 正向抵達輸出(隔離 tmpdir,raw 僅 TWSE 2025-Q1/Q2;磁碟先有 TPEX 6488 的 20252 列):
+
+```text
+TAP version 13
+# [r3-1 preserve] file=present market=tpex rows=[[20252,26.06,15.91,9.93]]
+# Subtest: quarterly reconcile preserves an existing TPEX quarter when only TWSE raw is authoritative
+ok 1 - quarterly reconcile preserves an existing TPEX quarter when only TWSE raw is authoritative
+...
+1..2
+# tests 2
+# pass 2
+# fail 0
+exit_code=0
+```
+
+驗收 1 負向對照:暫時把 r3 的按市場 reconcile 還原成 a2 的單一全域 `quarterlyById` 集合後,原封不動跑同一條測試;6488 檔被刪並真實轉紅。取得輸出後已立即恢復正式修正:
+
+```text
+TAP version 13
+# Subtest: quarterly reconcile preserves an existing TPEX quarter when only TWSE raw is authoritative
+not ok 1 - quarterly reconcile preserves an existing TPEX quarter when only TWSE raw is authoritative
+  ---
+  duration_ms: 30.730922
+  location: '/Users/zhengweizhu/Projects/wfnt-snapshot-data/tests/quarterly-backfill.test.mjs:169:1'
+  failureType: 'testCodeFailure'
+  error: "ENOENT: no such file or directory, access '/var/folders/t2/w9vv7vcs3b3808y8k70bkpp80000gn/T/wfnt-quarterly-test-MzasNK/data/derived/fundamentals/64/6488.json'"
+  code: 'ENOENT'
+  stack: |-
+    async access (node:internal/fs/promises:605:10)
+    async file:///Users/zhengweizhu/Projects/wfnt-snapshot-data/tests/quarterly-backfill.test.mjs:188:5
+    async withTempDir (file:///Users/zhengweizhu/Projects/wfnt-snapshot-data/tests/quarterly-backfill.test.mjs:23:16)
+    async TestContext.<anonymous> (file:///Users/zhengweizhu/Projects/wfnt-snapshot-data/tests/quarterly-backfill.test.mjs:170:3)
+  ...
+1..1
+# tests 1
+# pass 0
+# fail 1
+exit_code=1
+```
+
+驗收 2 正當 reconcile 輸出:fixture 讓 TWSE Q2 的 ids 與 Q1 完全不重疊,因此本季成功處理後得到**存在但為空**的權威集合;磁碟預置、已不在上游出現的 TWSE 9999 之 20252 列仍被移除,而 valuation 令檔案保留:
+
+```text
+# [warn] derived: quarterly dataset=twse/quarterly_fin_hist seasonKey=2025-Q2 missingPrevious=2 invalid=0
+# [r3-1 converge] file=present authoritativeIds=0 quarterlyRows=[]
+# Subtest: quarterly reconcile still converges an authoritative empty market set after an upstream revision
+ok 2 - quarterly reconcile still converges an authoritative empty market set after an upstream revision
+...
+1..2
+# tests 2
+# pass 2
+# fail 0
+exit_code=0
+```
+
+這證明修法沒有用「`presentIds` 空就跳過」偷掉收斂能力。reconcile 的正當用途仍成立:上游完成 revise 時,每個成功處理市場(包括權威集合為空)都會刪除該市場不再出現的舊季列;只有尚未形成權威集合的市場才受保護。
+
+### r3-2:`--delay-ms` 邊界 — PASS
+
+CLI 對裸旗標不再執行 `Number(true) === 1`;裸旗標轉為 `NaN`,且 `runQuarterlyBackfill` 同時要求輸入型別為 number、有限且非負。三組命令均在 logger/fetch/raw write 前被拒絕:
+
+```text
+$ node scripts/backfill-quarterly.mjs --from 2025-Q1 --to 2025-Q1 --out /tmp/ticket195-r3.YOWqMV/cli-missing --delay-ms
+Error: --delay-ms must be a non-negative number, got: NaN
+exit_code=1
+
+$ node scripts/backfill-quarterly.mjs --from 2025-Q1 --to 2025-Q1 --out /tmp/ticket195-r3.YOWqMV/cli-nonnumeric --delay-ms nope
+Error: --delay-ms must be a non-negative number, got: NaN
+exit_code=1
+
+$ node scripts/backfill-quarterly.mjs --from 2025-Q1 --to 2025-Q1 --out /tmp/ticket195-r3.YOWqMV/cli-negative --delay-ms -1
+Error: --delay-ms must be a non-negative number, got: -1
+exit_code=1
+```
+
+對應固化測試輸出:
+
+```text
+# [r3-2 missing] exit=1 stderr="Error: --delay-ms must be a non-negative number, got: NaN"
+# [r3-2 non-numeric] exit=1 stderr="Error: --delay-ms must be a non-negative number, got: NaN"
+# [r3-2 negative] exit=1 stderr="Error: --delay-ms must be a non-negative number, got: -1"
+# Subtest: CLI rejects missing, non-numeric, and negative --delay-ms values
+ok 3 - CLI rejects missing, non-numeric, and negative --delay-ms values
+```
+
+### r3 驗收 1～5
+
+1. **PASS** — 缺席 TPEX 權威集合時,既有 6488 `[[20252,26.06,15.91,9.93]]` 與檔案皆在;還原全域 reconcile 後同一測試以 `ENOENT` 真實轉紅。
+2. **PASS** — 成功處理 TWSE 且權威集合為空時,9999 的 20252 舊列被移除、檔案與 valuation 保留;證明上游 revise 收斂未被砍掉。
+3. **PASS** — `--delay-ms` 缺值、`nope`、`-1` 分別 exit 1;三組均未進入網路路徑。
+4. **PASS** — `node --test tests/` 全綠,由 a2 基線 75 增為 78:
+
+   ```text
+   1..78
+   # tests 78
+   # suites 0
+   # pass 78
+   # fail 0
+   # cancelled 0
+   # skipped 0
+   # todo 0
+   # duration_ms 2780.420609
+   exit_code=0
+   ```
+
+5. **PASS** — 開工標記位於 repo 外 `/tmp/ticket195-r3.YOWqMV/start.marker`;實跑:
+
+   ```text
+   find data -type f -newer /tmp/ticket195-r3.YOWqMV/start.marker -print
+   (no output)
+   exit_code=0
+   ```
+
+### 既有能力移除與範圍比對
+
+結論: **沒有移除任何既有能力、測試、gate、序列欄位或輸出路徑。**
+
+- 檔案刪除:`git diff --diff-filter=D --name-only` 無輸出。
+- 測試/gate:a2 的 75 條全數仍在,新增 3 條後 78/78;`tests/quarterly-backfill.test.mjs` 的 r3 diff 為純新增 70 行,沒有刪除、skip、assertion 放寬或吞錯。
+- r1/r2 能力:全套既有季度 parser、HF5 錨點、累計負向對照、多表選取、插欄、刪檔保護、前季缺席、Q1 起算、隔離串接、全量/增量位元級測試皆繼續通過。
+- valuation/revenue 相容性:`reconcileFundamentalPeriod` 的 `market` 是可選參數;既有 valuation/revenue 呼叫不傳它,維持全域 reconcile。`upsertFundamental` 三個並列分支未重構,P3 明確未動。
+- Out of Scope:`git diff --quiet HEAD -- scripts/backfill-monthly.mjs` exit 0;`applyMonthlyRevenue` hunk 為零。`scripts/run.mjs`、workflow、probe 等亦無 r3 diff。
+- reconcile 正當用途:以 `authoritativeIdsByMarket` 的**鍵是否存在**區分缺席集合與權威空集合;存在即使 size 0 仍按市場收斂,所以合法的「本季一家都沒有」與上游 revise 都會移除舊列;缺席鍵才不動既有正確資料。
+
+### r3 最終 working tree
+
+r3 改動檔案:
+
+```text
+REPORT-195.md
+scripts/backfill-quarterly.mjs
+scripts/lib/derived.mjs
+tests/quarterly-backfill.test.mjs
+```
+
+`git status --short`:
+
+```text
+ M REPORT-195.md
+ M scripts/backfill-quarterly.mjs
+ M scripts/lib/derived.mjs
+ M tests/quarterly-backfill.test.mjs
+?? REPORT-070.md
+?? REPORT-189.md
+?? REPORT-192.md
+?? REPORT-194.md
+```
+
+四份 `REPORT-070.md` / `REPORT-189.md` / `REPORT-192.md` / `REPORT-194.md` 仍是票面 HF10 指定的既有未追蹤雜訊,r3 未修改。
+
+`git diff --stat`:
+
+```text
+REPORT-195.md                     | 175 ++++++++++++++++++++++++++++++++++++++
+ scripts/backfill-quarterly.mjs    |   8 +-
+ scripts/lib/derived.mjs           |  17 ++--
+ tests/quarterly-backfill.test.mjs |  70 ++++++++++++++++
+ 4 files changed, 262 insertions(+), 8 deletions(-)
+```
+
+`git diff --check` 輸出為空,exit 0。

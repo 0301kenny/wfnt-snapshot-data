@@ -166,6 +166,61 @@ test('Q2 raw without same-year Q1 produces no quarterly rows', async () => {
   });
 });
 
+test('quarterly reconcile preserves an existing TPEX quarter when only TWSE raw is authoritative', async () => {
+  await withTempDir(async (root) => {
+    const path = join(root, 'data', 'derived', 'fundamentals', '64', '6488.json');
+    await mkdir(dirname(path), { recursive: true });
+    const quarterly = { cols: ['q', 'gm', 'om', 'nm'], rows: [[20252, 26.06, 15.91, 9.93]] };
+    await writeFile(path, `${JSON.stringify({
+      id: '6488',
+      name: '環球晶',
+      market: 'tpex',
+      updated: null,
+      valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [] },
+      revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] },
+      quarterly,
+    }, null, 2)}\n`);
+    await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
+    await writeRaw(root, 'twse', '2025-Q2', makeSiiQuarterlyFixture(2));
+
+    await applyQuarterlyFinancials(root, '2025-Q2');
+
+    await access(path);
+    const after = await readFundamental(root, '6488');
+    assert.deepEqual(after.quarterly, quarterly);
+    console.log(`[r3-1 preserve] file=present market=${after.market} rows=${JSON.stringify(after.quarterly.rows)}`);
+  });
+});
+
+test('quarterly reconcile still converges an authoritative empty market set after an upstream revision', async () => {
+  await withTempDir(async (root) => {
+    const path = join(root, 'data', 'derived', 'fundamentals', '99', '9999.json');
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, `${JSON.stringify({
+      id: '9999',
+      name: '已移除公司',
+      market: 'twse',
+      updated: '2025-01-01',
+      valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [[20250101, 1, 1, 1]] },
+      revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] },
+      quarterly: { cols: ['q', 'gm', 'om', 'nm'], rows: [[20252, 10, 10, 10]] },
+    }, null, 2)}\n`);
+    await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
+    const revisedQ2 = Buffer.from(makeSiiQuarterlyFixture(2).toString('utf8')
+      .replaceAll('<td>2330</td>', '<td>3333</td>')
+      .replaceAll('<td>1101</td>', '<td>4444</td>'));
+    await writeRaw(root, 'twse', '2025-Q2', revisedQ2);
+
+    await applyQuarterlyFinancials(root, '2025-Q2');
+
+    await access(path);
+    const after = await readFundamental(root, '9999');
+    assert.deepEqual(after.quarterly.rows, []);
+    assert.deepEqual(after.valuation.rows, [[20250101, 1, 1, 1]]);
+    console.log(`[r3-1 converge] file=present authoritativeIds=0 quarterlyRows=${JSON.stringify(after.quarterly.rows)}`);
+  });
+});
+
 test('quarterly backfill posts exact form, preserves bytes, checkpoints, and rejects non-Q1 starts', async () => {
   await withTempDir(async (root) => {
     const calls = [];
@@ -190,6 +245,21 @@ test('CLI rejects a non-Q1 --from before making any request', async () => {
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /--from must start at Q1 because later quarters require same-year cumulative differencing/);
   assert.equal(result.stdout, '');
+});
+
+test('CLI rejects missing, non-numeric, and negative --delay-ms values', async () => {
+  const cases = [
+    { label: 'missing', args: ['--delay-ms'] },
+    { label: 'non-numeric', args: ['--delay-ms', 'nope'] },
+    { label: 'negative', args: ['--delay-ms', '-1'] },
+  ];
+  for (const input of cases) {
+    const result = await runCli(['--from', '2025-Q1', '--to', '2025-Q1', '--out', tmpdir(), ...input.args]);
+    assert.notEqual(result.code, 0, input.label);
+    assert.match(result.stderr, /--delay-ms must be a non-negative number/, input.label);
+    assert.equal(result.stdout, '', input.label);
+    console.log(`[r3-2 ${input.label}] exit=${result.code} stderr=${JSON.stringify(result.stderr.split('\n')[0])}`);
+  }
 });
 
 test('isolated backfill to applyQuarterlyFinancials produces raw and derived quarterly rows', async () => {

@@ -139,7 +139,7 @@ export async function runQuarterlyBackfill({
   if (seasonInt(fromSeason) > seasonInt(toSeason)) {
     throw new Error(`--from must be <= --to, got: ${fromSeason} > ${toSeason}`);
   }
-  if (!Number.isFinite(delayMs) || delayMs < 0) {
+  if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0) {
     throw new Error(`--delay-ms must be a non-negative number, got: ${delayMs}`);
   }
   if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
@@ -185,7 +185,11 @@ if (isCli) {
     rootDir: args.out ?? process.cwd(),
     fromSeason: args.from,
     toSeason: args.to,
-    delayMs: args['delay-ms'] === undefined ? 3000 : Number(args['delay-ms']),
+    delayMs: args['delay-ms'] === undefined
+      ? 3000
+      : typeof args['delay-ms'] === 'string'
+        ? Number(args['delay-ms'])
+        : Number.NaN,
   }).catch((error) => {
     console.error(error?.stack ?? error);
     process.exitCode = 1;
