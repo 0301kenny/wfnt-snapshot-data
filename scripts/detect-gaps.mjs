@@ -22,6 +22,7 @@ export const COVERAGE_SOURCES = {
     'tpex/daily_quotes_hist',
     'tpex/insti_hist',
     'tpex/margin_hist',
+    'tpex/pe_hist',
     'tpex/mainboard_close',
   ],
 };

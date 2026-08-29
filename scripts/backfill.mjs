@@ -46,7 +46,12 @@ function parseArgs(argv) {
 
 function assertIso(label, value) {
   const text = String(value ?? '');
-  if (!ISO_RE.test(text) || Number.isNaN(new Date(`${text}T00:00:00Z`).getTime())) {
+  const parsed = new Date(`${text}T00:00:00Z`);
+  if (
+    !ISO_RE.test(text) ||
+    Number.isNaN(parsed.getTime()) ||
+    parsed.toISOString().slice(0, 10) !== text
+  ) {
     throw new Error(`${label} must be YYYY-MM-DD, got: ${value}`);
   }
   return text;
@@ -378,16 +383,20 @@ export async function runBackfill({
   return summary;
 }
 
-async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  return runBackfill({
+export function backfillOptionsFromArgs(args) {
+  return {
     rootDir: String(args.out ?? process.cwd()),
-    fromIso: args.dates === undefined ? (args.from ?? '2024-01-01') : undefined,
-    toIso: args.dates === undefined ? (args.to ?? '2024-01-31') : undefined,
+    fromIso: args.from ?? (args.dates === undefined ? '2024-01-01' : undefined),
+    toIso: args.to ?? (args.dates === undefined ? '2024-01-31' : undefined),
     dates: args.dates,
     delayMs: Number(args['delay-ms'] ?? 3000),
     symbolWindow: Number(args.window ?? DEFAULT_SYMBOL_WINDOW),
-  });
+  };
+}
+
+async function main() {
+  const args = parseArgs(process.argv.slice(2));
+  return runBackfill(backfillOptionsFromArgs(args));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   COVERAGE_SOURCES,
   collectCoveredDates,
@@ -10,6 +11,7 @@ import {
 } from '../scripts/detect-gaps.mjs';
 
 const silentLogger = { log() {}, warn() {} };
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 
 async function withTempDir(fn) {
   const root = await mkdtemp(join(tmpdir(), 'wfnt-gaps-test-'));
@@ -39,6 +41,29 @@ function responseFor(bytes, status = 200) {
     },
   };
 }
+
+test('coverage sources match every daily raw namespace on disk', async () => {
+  const closeSource = {
+    twse: 'twse/stock_day_all',
+    tpex: 'tpex/mainboard_close',
+  };
+  for (const market of ['twse', 'tpex']) {
+    const entries = await readdir(join(repoRoot, 'data', 'raw', market), { withFileTypes: true });
+    const dailyNamespaces = entries
+      .filter((entry) => (
+        entry.isDirectory() &&
+        entry.name.endsWith('_hist') &&
+        entry.name !== 'monthly_revenue_hist'
+      ))
+      .map((entry) => `${market}/${entry.name}`);
+    dailyNamespaces.push(closeSource[market]);
+    assert.deepEqual(
+      [...COVERAGE_SOURCES[market]].sort(),
+      dailyNamespaces.sort(),
+      `${market} coverage sources drifted from data/raw namespaces`,
+    );
+  }
+});
 
 test('coverage uses market-local unions and both close endpoints prevent HF2 false gaps', async () => {
   await withTempDir(async (root) => {

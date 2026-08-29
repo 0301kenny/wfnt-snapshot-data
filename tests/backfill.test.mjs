@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { runBackfill } from '../scripts/backfill.mjs';
+import { backfillOptionsFromArgs, runBackfill } from '../scripts/backfill.mjs';
 import { buildDerived } from '../scripts/build-derived.mjs';
 import { BACKFILL_ENDPOINTS, ENDPOINTS } from '../scripts/endpoints.mjs';
 import {
@@ -843,4 +843,60 @@ test('--dates rejects today and future dates before fetching', async () => {
     now: () => new Date('2026-08-29T00:00:00Z'),
   }), /must be before today \(2026-08-29\)/);
   assert.equal(calls, 0);
+});
+
+test('CLI options preserve explicit range flags for --dates conflicts and retain range defaults', async () => {
+  let calls = 0;
+  const conflicting = backfillOptionsFromArgs({
+    dates: '2026-08-18',
+    from: '2026-08-01',
+    'delay-ms': '0',
+  });
+  await assert.rejects(runBackfill({
+    ...conflicting,
+    fetchImpl: async () => { calls += 1; },
+    sleepImpl: async () => {},
+    logger: silentLogger,
+    now: () => new Date('2026-08-29T00:00:00Z'),
+  }), /--dates cannot be combined with --from or --to/);
+  assert.equal(calls, 0);
+
+  const defaults = backfillOptionsFromArgs({});
+  assert.equal(defaults.fromIso, '2024-01-01');
+  assert.equal(defaults.toIso, '2024-01-31');
+  const explicitOnly = backfillOptionsFromArgs({ dates: '2026-08-18' });
+  assert.equal(explicitOnly.fromIso, undefined);
+  assert.equal(explicitOnly.toIso, undefined);
+});
+
+test('--dates rejects nonexistent calendar dates before fetching and accepts a real date', async () => {
+  await withTempDir(async (root) => {
+    let calls = 0;
+    await assert.rejects(runBackfill({
+      rootDir: root,
+      dates: '2026-02-29',
+      delayMs: 0,
+      maxRetries: 0,
+      fetchImpl: async () => { calls += 1; },
+      sleepImpl: async () => {},
+      logger: silentLogger,
+      now: () => new Date('2026-08-29T00:00:00Z'),
+    }), /--dates must be YYYY-MM-DD, got: 2026-02-29/);
+    assert.equal(calls, 0);
+
+    await assert.rejects(runBackfill({
+      rootDir: root,
+      dates: '2026-02-28',
+      delayMs: 0,
+      maxRetries: 0,
+      fetchImpl: async () => {
+        calls += 1;
+        throw new Error('valid date reached fetch');
+      },
+      sleepImpl: async () => {},
+      logger: silentLogger,
+      now: () => new Date('2026-08-29T00:00:00Z'),
+    }), /valid date reached fetch/);
+    assert.equal(calls, 1);
+  });
 });
