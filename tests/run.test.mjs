@@ -667,6 +667,7 @@ test('bwibbu raw produces valuation fundamentals, nulls invalid numbers, and exc
       updated: '2026-07-06',
       valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [[20260706, 25.1, null, null]] },
       revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] },
+      quarterly: { cols: ['q', 'gm', 'om', 'nm'], rows: [] },
     });
     await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '12', '123456.json')));
 
@@ -776,6 +777,7 @@ test('tpex revenue creates empty valuation, maps invalid numbers to null, and ex
       updated: '2026-06-01',
       valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [] },
       revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [[202606, 543210, null, null]] },
+      quarterly: { cols: ['q', 'gm', 'om', 'nm'], rows: [] },
     });
     await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '12', '123456.json')));
   });

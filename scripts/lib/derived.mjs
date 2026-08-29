@@ -8,11 +8,21 @@ export const DEFAULT_SYMBOL_WINDOW = 1300;
 export const DEFAULT_TDCC_WINDOW = 64;
 export const DEFAULT_VALUATION_WINDOW = 1300;
 export const DEFAULT_REVENUE_WINDOW = 36;
+export const DEFAULT_QUARTERLY_WINDOW = 24;
 
 const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'];
 const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
 const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
+export const QUARTERLY_COLS = ['q', 'gm', 'om', 'nm'];
+export const MOPS_QUARTERLY_FIELDS = {
+  id: '公司代號',
+  name: '公司名稱',
+  revenue: '營業收入',
+  grossProfit: '營業毛利（毛損）',
+  operatingIncome: '營業利益（損失）',
+  netIncome: '本期淨利（淨損）',
+};
 const MOPS_REVENUE_FIELDS = [
   '公司代號',
   '公司名稱',
@@ -105,6 +115,48 @@ function decodeMopsHtml(bytes) {
   } catch {
     throw new Error('MOPS monthly revenue: invalid big5 HTML');
   }
+}
+
+function decodeMopsQuarterlyHtml(bytes) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('MOPS quarterly financials: invalid UTF-8 HTML');
+  }
+}
+
+export function parseMopsQuarterlyFinHtml(bytes) {
+  const html = decodeMopsQuarterlyHtml(bytes);
+  let header = null;
+  let indexes = null;
+  const rows = [];
+  for (const rowMatch of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...rowMatch[1].matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)]
+      .map((match) => mopsCellText(match[1]));
+    if (cells[0] === '公司代號') {
+      if (header) break;
+      if (!cells.includes(MOPS_QUARTERLY_FIELDS.grossProfit)) continue;
+      header = cells;
+      indexes = requiredFieldIndexes(
+        header,
+        MOPS_QUARTERLY_FIELDS,
+        'MOPS quarterly financials',
+      );
+      continue;
+    }
+    if (!header || !/^\d{4}$/.test(cells[0] ?? '') || cells.length !== header.length) continue;
+    rows.push({
+      id: cells[indexes.id],
+      name: cells[indexes.name],
+      revenue: compactNumber(cells[indexes.revenue]),
+      grossProfit: compactNumber(cells[indexes.grossProfit]),
+      operatingIncome: compactNumber(cells[indexes.operatingIncome]),
+      netIncome: compactNumber(cells[indexes.netIncome]),
+    });
+  }
+  if (!header) throw new Error('MOPS quarterly financials: general-industry header missing');
+  if (rows.length === 0) throw new Error('MOPS quarterly financials: response has 0 general-industry data rows');
+  return rows;
 }
 
 export function parseMopsMonthlyRevenue(bytes, rocMonth) {
@@ -424,6 +476,23 @@ async function readMopsMonthlyRevenueRaw(rootDir, sourceDataset, monthKey) {
   return found ? rows : null;
 }
 
+async function readMopsQuarterlyFinRaw(rootDir, sourceDataset, seasonKey) {
+  const path = join(
+    rootDir,
+    'data',
+    'raw',
+    sourceDataset,
+    seasonKey.slice(0, 4),
+    `${seasonKey}.html`,
+  );
+  try {
+    return parseMopsQuarterlyFinHtml(await readFile(path));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 async function readExistingJson(path, fallback) {
   return readJsonIfExists(path, fallback);
 }
@@ -642,6 +711,7 @@ async function upsertFundamental(rootDir, item, kind, row, window) {
     updated: null,
     valuation: { cols: VALUATION_COLS, rows: [] },
     revenue: { cols: REVENUE_COLS, rows: [] },
+    quarterly: { cols: QUARTERLY_COLS, rows: [] },
   });
   const valuationRows = kind === 'valuation'
     ? upsertRows(current.valuation?.rows ?? [], row, window)
@@ -649,6 +719,9 @@ async function upsertFundamental(rootDir, item, kind, row, window) {
   const revenueRows = kind === 'revenue'
     ? upsertRows(current.revenue?.rows ?? [], row, window)
     : current.revenue?.rows ?? [];
+  const quarterlyRows = kind === 'quarterly'
+    ? upsertRows(current.quarterly?.rows ?? [], row, window)
+    : current.quarterly?.rows ?? [];
   const incomingWinsMetadata = kind === 'valuation'
     || current.market !== 'twse'
     || item.market === 'twse';
@@ -659,6 +732,7 @@ async function upsertFundamental(rootDir, item, kind, row, window) {
     updated: fundamentalsUpdated(valuationRows, revenueRows),
     valuation: { cols: VALUATION_COLS, rows: valuationRows },
     revenue: { cols: REVENUE_COLS, rows: revenueRows },
+    quarterly: { cols: QUARTERLY_COLS, rows: quarterlyRows },
   };
   return writeDerivedJson(path, next);
 }
@@ -682,14 +756,19 @@ async function listFundamentalPaths(rootDir) {
   }
 }
 
-async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds) {
+export async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds) {
   let written = 0;
   for (const path of await listFundamentalPaths(rootDir)) {
     const current = await readExistingJson(path, null);
     if (!current || presentIds.has(String(current.id))) continue;
     const valuationRows = current.valuation?.rows ?? [];
     const revenueRows = current.revenue?.rows ?? [];
-    const currentRows = kind === 'valuation' ? valuationRows : revenueRows;
+    const quarterlyRows = current.quarterly?.rows ?? [];
+    const currentRows = kind === 'valuation'
+      ? valuationRows
+      : kind === 'revenue'
+        ? revenueRows
+        : quarterlyRows;
     if (!currentRows.some((row) => row[0] === key)) continue;
     const nextValuationRows = kind === 'valuation'
       ? valuationRows.filter((row) => row[0] !== key)
@@ -697,7 +776,10 @@ async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds) {
     const nextRevenueRows = kind === 'revenue'
       ? revenueRows.filter((row) => row[0] !== key)
       : revenueRows;
-    if (nextValuationRows.length === 0 && nextRevenueRows.length === 0) {
+    const nextQuarterlyRows = kind === 'quarterly'
+      ? quarterlyRows.filter((row) => row[0] !== key)
+      : quarterlyRows;
+    if (nextValuationRows.length === 0 && nextRevenueRows.length === 0 && nextQuarterlyRows.length === 0) {
       await rm(path);
       written += 1;
       continue;
@@ -707,6 +789,7 @@ async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds) {
       updated: fundamentalsUpdated(nextValuationRows, nextRevenueRows),
       valuation: { cols: VALUATION_COLS, rows: nextValuationRows },
       revenue: { cols: REVENUE_COLS, rows: nextRevenueRows },
+      quarterly: { cols: QUARTERLY_COLS, rows: nextQuarterlyRows },
     };
     if (await writeDerivedJson(path, next)) written += 1;
   }
@@ -1024,6 +1107,99 @@ export async function applyMonthlyRevenue(rootDir, monthKey, { revenueWindow = D
         compactNumber(row['營業收入-去年同月增減(%)']),
         compactNumber(row['營業收入-上月比較增減(%)']),
       ], revenueWindow);
+    if (didWrite) written += 1;
+  }
+  return { fundamentals: written };
+}
+
+export async function applyQuarterlyFinancials(
+  rootDir,
+  seasonKey,
+  { quarterlyWindow = DEFAULT_QUARTERLY_WINDOW } = {},
+) {
+  const match = /^(\d{4})-Q([1-4])$/.exec(String(seasonKey ?? ''));
+  if (!match) throw new Error(`quarterly financials: invalid season key ${seasonKey}`);
+  const year = Number(match[1]);
+  const season = Number(match[2]);
+  const quarterKey = year * 10 + season;
+  const previousSeasonKey = season === 1 ? null : `${year}-Q${season - 1}`;
+  const sources = [
+    { sourceDataset: 'twse/quarterly_fin_hist', market: 'twse' },
+    { sourceDataset: 'tpex/quarterly_fin_hist', market: 'tpex' },
+  ];
+  const quarterlyById = new Map();
+
+  for (const source of sources) {
+    const currentRows = await readMopsQuarterlyFinRaw(rootDir, source.sourceDataset, seasonKey);
+    if (currentRows === null) continue;
+    const previousRows = previousSeasonKey === null
+      ? null
+      : await readMopsQuarterlyFinRaw(rootDir, source.sourceDataset, previousSeasonKey);
+    if (previousSeasonKey !== null && previousRows === null) {
+      console.warn(`[warn] derived: quarterly dataset=${source.sourceDataset} seasonKey=${seasonKey} previous raw missing; skipped=${currentRows.length}`);
+      continue;
+    }
+    const previousById = new Map((previousRows ?? []).map((row) => [row.id, row]));
+    let missingPrevious = 0;
+    let invalid = 0;
+    for (const current of currentRows) {
+      if (!isDerivedSymbolId(current.id)) continue;
+      const previous = previousSeasonKey === null ? null : previousById.get(current.id);
+      if (previousSeasonKey !== null && !previous) {
+        missingPrevious += 1;
+        continue;
+      }
+      const absolute = [
+        current.revenue,
+        current.grossProfit,
+        current.operatingIncome,
+        current.netIncome,
+      ];
+      const previousAbsolute = previous === null ? null : [
+        previous.revenue,
+        previous.grossProfit,
+        previous.operatingIncome,
+        previous.netIncome,
+      ];
+      if (absolute.some((value) => value === null)
+        || previousAbsolute?.some((value) => value === null)) {
+        invalid += 1;
+        continue;
+      }
+      const singleQuarter = previousAbsolute === null
+        ? absolute
+        : absolute.map((value, index) => value - previousAbsolute[index]);
+      if (singleQuarter[0] <= 0) {
+        invalid += 1;
+        continue;
+      }
+      const currentWinner = quarterlyById.get(current.id);
+      if (!currentWinner || source.market === 'twse') {
+        quarterlyById.set(current.id, {
+          source,
+          row: current,
+          values: singleQuarter,
+        });
+      }
+    }
+    if (missingPrevious > 0 || invalid > 0) {
+      console.warn(`[warn] derived: quarterly dataset=${source.sourceDataset} seasonKey=${seasonKey} missingPrevious=${missingPrevious} invalid=${invalid}`);
+    }
+  }
+
+  let written = 0;
+  for (const [id, { source, row, values }] of [...quarterlyById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const [revenue, grossProfit, operatingIncome, netIncome] = values;
+    const didWrite = await upsertFundamental(rootDir, {
+      id,
+      name: row.name,
+      market: source.market,
+    }, 'quarterly', [
+      quarterKey,
+      round2((grossProfit / revenue) * 100),
+      round2((operatingIncome / revenue) * 100),
+      round2((netIncome / revenue) * 100),
+    ], quarterlyWindow);
     if (didWrite) written += 1;
   }
   return { fundamentals: written };

@@ -120,6 +120,24 @@ Derived 對每個市場、每個月份優先讀取既有 OpenAPI JSON;該月 Ope
 }
 ```
 
+## Quarterly financial backfill
+
+`scripts/backfill-quarterly.mjs` 只供授權的歷史季度回補使用,不加入 `scripts/run.mjs` 日更清單。它以 POST form 呼叫 MOPS 官方 `ajax_t163sb04`,上市使用 `TYPEK=sii`,上櫃使用 `TYPEK=otc`;回應是 UTF-8 HTML。每季、每市場各保留一份官方 response body 原始 bytes:
+
+```text
+data/raw/twse/quarterly_fin_hist/{yyyy}/{yyyy-Qn}.html
+data/raw/tpex/quarterly_fin_hist/{yyyy}/{yyyy-Qn}.html
+```
+
+回補範圍用 `--from YYYY-Qn --to YYYY-Qn` 指定,`--from` 必須是 Q1,因為 Q2/Q3/Q4 的單季數字由同年前一季累計值差分取得。`--delay-ms` 預設 3000;目標檔已存在就跳過。可用 `--out` 將所有 raw 寫到隔離 root:
+
+```bash
+node scripts/backfill-quarterly.mjs --from 2021-Q1 --to 2026-Q2
+node scripts/backfill-quarterly.mjs --from 2025-Q1 --to 2025-Q2 --out /tmp/wfnt-quarterly-backfill --delay-ms 3000
+```
+
+解析只選 header 含 `營業毛利（毛損）` 的一般業表,以 header 文字定位營業收入、營業毛利、營業利益與本期淨利。Q1 直接使用累計絕對數;其餘季度先對四個絕對數做差分再計算三率。前一季 raw 或同代號前一季列缺席、必要值缺失、單季營業收入非正數時不產出該季列。
+
 ## TDCC weekly snapshot
 
 週更資料集:
@@ -222,15 +240,17 @@ data/derived/market.json
   "market": "twse",
   "updated": "2026-07-16",
   "valuation": { "cols": ["d", "per", "pbr", "dy"], "rows": [[20260716, 25.1, 5.2, 1.8]] },
-  "revenue": { "cols": ["m", "rev", "yoy", "mom"], "rows": [[202606, 123456789, 12.3, -1.2]] }
+  "revenue": { "cols": ["m", "rev", "yoy", "mom"], "rows": [[202606, 123456789, 12.3, -1.2]] },
+  "quarterly": { "cols": ["q", "gm", "om", "nm"], "rows": [[20252, 58.62, 49.63, 42.57]] }
 }
 ```
 
 - `name` / `market`:來源列公司名稱與資料集市場。若同代號跨來源碰撞,TWSE metadata 優先;TWSE 與 TPEX 皆有估值來源。
-- `updated`:valuation 最大 `d` 轉 ISO 日期與 revenue 最大 `m` 轉該月 1 日後,取兩者較新值;因此僅有月營收時例如 `202606` 為 `2026-06-01`。此規則不依執行時間,可確定性重建。
+- `updated`:valuation 最大 `d` 轉 ISO 日期與 revenue 最大 `m` 轉該月 1 日後,取兩者較新值;因此僅有月營收時例如 `202606` 為 `2026-06-01`。Quarterly 不參與 `updated`,避免季度鍵改變既有日期語意。此規則不依執行時間,可確定性重建。
 - `d`:西元 `yyyymmdd` 整數;`per` / `pbr` / `dy` 分別是 `PEratio` / `PBratio` / `DividendYield`。TWSE 估值採 openapi 優先、legacy fallback;TPEX 估值只有 legacy 來源。Rolling window 1300 筆。
 - `m`:西元 `yyyymm` 整數;`rev` 是 `營業收入-當月營收` 的千元原值,不換算;`yoy` / `mom` 分別是去年同月與上月比較增減百分比。月營收採 OpenAPI 優先、MOPS hist fallback。Rolling window 36 筆。
-- 所有數值會移除千分位逗號後轉 Number;空字串、`--`、非有限數或不可解析值為 `null`。Rows 依 `d` / `m` 升冪並以同鍵 upsert。
+- `q`:西元年乘 10 加季別,例如 2025Q1 為 `20251`;`gm` / `om` / `nm` 是差分後單季毛利率、營益率、淨利率,百分比四捨五入至小數 2 位。只涵蓋 MOPS 一般業表,rolling window 24 季。
+- 所有數值會移除千分位逗號後轉 Number;空字串、`--`、非有限數或不可解析值為 `null`。Rows 依 `d` / `m` / `q` 升冪並以同鍵 upsert。
 
 ### Market series
 
@@ -270,6 +290,7 @@ node scripts/run.mjs --force
 node scripts/detect-gaps.mjs
 node scripts/backfill.mjs --dates 2026-08-17,2026-08-18 --out /tmp/wfnt-daily-hole-fill
 node scripts/backfill-monthly.mjs --from 2023-08 --to 2026-07 --out /tmp/wfnt-monthly-backfill
+node scripts/backfill-quarterly.mjs --from 2021-Q1 --to 2026-Q2 --out /tmp/wfnt-quarterly-backfill
 node scripts/build-derived.mjs
 ```
 

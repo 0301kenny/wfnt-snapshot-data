@@ -277,6 +277,8 @@ test('backfill endpoints remain separate from the unchanged daily endpoint list'
   assert.deepEqual(Object.keys(BACKFILL_ENDPOINTS), [
     'twse_monthly_revenue_hist',
     'tpex_monthly_revenue_hist',
+    'twse_quarterly_fin_hist',
+    'tpex_quarterly_fin_hist',
     'twse_mi_index_hist',
     'twse_t86_hist',
     'twse_mi_margn_hist',
@@ -288,6 +290,16 @@ test('backfill endpoints remain separate from the unchanged daily endpoint list'
   ]);
   assert.equal(BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.sourceDataset, 'twse/monthly_revenue_hist');
   assert.equal(BACKFILL_ENDPOINTS.tpex_monthly_revenue_hist.sourceDataset, 'tpex/monthly_revenue_hist');
+  assert.deepEqual(BACKFILL_ENDPOINTS.twse_quarterly_fin_hist, {
+    sourceDataset: 'twse/quarterly_fin_hist',
+    url: 'https://mopsov.twse.com.tw/mops/web/ajax_t163sb04',
+    typek: 'sii',
+  });
+  assert.deepEqual(BACKFILL_ENDPOINTS.tpex_quarterly_fin_hist, {
+    sourceDataset: 'tpex/quarterly_fin_hist',
+    url: 'https://mopsov.twse.com.tw/mops/web/ajax_t163sb04',
+    typek: 'otc',
+  });
   assert.equal(
     BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.url(115, 7, 1),
     'https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_115_7_1.html',
