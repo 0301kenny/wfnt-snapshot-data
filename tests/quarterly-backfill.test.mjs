@@ -154,6 +154,7 @@ test('reconcile preserves quarterly-only files and quarterly surviving removal o
     const after = await readFundamental(root, '2330');
     assert.deepEqual(after.revenue.rows, []);
     assert.deepEqual(after.quarterly, quarterly);
+    console.log(`[r4-5 quarterly-only-protection] file=present valuation=${JSON.stringify(after.valuation.rows)} revenue=${JSON.stringify(after.revenue.rows)} quarterly=${JSON.stringify(after.quarterly.rows)}`);
   });
 });
 
@@ -166,7 +167,7 @@ test('Q2 raw without same-year Q1 produces no quarterly rows', async () => {
   });
 });
 
-test('quarterly reconcile preserves an existing TPEX quarter when only TWSE raw is authoritative', async () => {
+test('quarterly incremental apply preserves a row when its market raw is absent', async () => {
   await withTempDir(async (root) => {
     const path = join(root, 'data', 'derived', 'fundamentals', '64', '6488.json');
     await mkdir(dirname(path), { recursive: true });
@@ -183,16 +184,17 @@ test('quarterly reconcile preserves an existing TPEX quarter when only TWSE raw 
     await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
     await writeRaw(root, 'twse', '2025-Q2', makeSiiQuarterlyFixture(2));
 
+    const before = await readFundamental(root, '6488');
     await applyQuarterlyFinancials(root, '2025-Q2');
 
     await access(path);
     const after = await readFundamental(root, '6488');
     assert.deepEqual(after.quarterly, quarterly);
-    console.log(`[r3-1 preserve] file=present market=${after.market} rows=${JSON.stringify(after.quarterly.rows)}`);
+    console.log(`[r4-1 absent-market] before=${JSON.stringify(before.quarterly.rows)} after=${JSON.stringify(after.quarterly.rows)} file=present`);
   });
 });
 
-test('quarterly reconcile still converges an authoritative empty market set after an upstream revision', async () => {
+test('quarterly incremental apply preserves a row absent from complete raw for both markets', async () => {
   await withTempDir(async (root) => {
     const path = join(root, 'data', 'derived', 'fundamentals', '99', '9999.json');
     await mkdir(dirname(path), { recursive: true });
@@ -200,24 +202,87 @@ test('quarterly reconcile still converges an authoritative empty market set afte
       id: '9999',
       name: '已移除公司',
       market: 'twse',
-      updated: '2025-01-01',
-      valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [[20250101, 1, 1, 1]] },
+      updated: null,
+      valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [] },
       revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] },
-      quarterly: { cols: ['q', 'gm', 'om', 'nm'], rows: [[20252, 10, 10, 10]] },
+      quarterly: { cols: ['q', 'gm', 'om', 'nm'], rows: [[20251, 10, 10, 10]] },
     }, null, 2)}\n`);
     await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
-    const revisedQ2 = Buffer.from(makeSiiQuarterlyFixture(2).toString('utf8')
-      .replaceAll('<td>2330</td>', '<td>3333</td>')
-      .replaceAll('<td>1101</td>', '<td>4444</td>'));
-    await writeRaw(root, 'twse', '2025-Q2', revisedQ2);
+    await writeRaw(root, 'tpex', '2025-Q1', makeOtcQuarterlyFixture());
 
-    await applyQuarterlyFinancials(root, '2025-Q2');
+    const before = await readFundamental(root, '9999');
+    await applyQuarterlyFinancials(root, '2025-Q1');
 
     await access(path);
     const after = await readFundamental(root, '9999');
-    assert.deepEqual(after.quarterly.rows, []);
-    assert.deepEqual(after.valuation.rows, [[20250101, 1, 1, 1]]);
-    console.log(`[r3-1 converge] file=present authoritativeIds=0 quarterlyRows=${JSON.stringify(after.quarterly.rows)}`);
+    assert.deepEqual(after.quarterly.rows, [[20251, 10, 10, 10]]);
+    console.log(`[r4-1 complete-raw-absence] before=${JSON.stringify(before.quarterly.rows)} after=${JSON.stringify(after.quarterly.rows)} file=present`);
+  });
+});
+
+test('quarterly incremental apply ignores file market metadata when preserving a TPEX-sourced row', async () => {
+  await withTempDir(async (root) => {
+    const path = join(root, 'data', 'derived', 'fundamentals', '54', '5483.json');
+    const tpexFixture = Buffer.from(makeOtcQuarterlyFixture().toString('utf8')
+      .replace('<td>1240</td>', '<td>5483</td>')
+      .replace('<td>茂生農經</td>', '<td>中美晶</td>'));
+    const tpexRawPath = await writeRaw(root, 'tpex', '2025-Q1', tpexFixture);
+    await applyQuarterlyFinancials(root, '2025-Q1');
+    const createdFromTpex = await readFundamental(root, '5483');
+    assert.equal(createdFromTpex.market, 'tpex');
+    const sourceMarket = createdFromTpex.market;
+    createdFromTpex.market = 'twse';
+    createdFromTpex.updated = '2025-08-01';
+    createdFromTpex.valuation.rows = [[20250801, 20, 2, 1]];
+    await writeFile(path, `${JSON.stringify(createdFromTpex, null, 2)}\n`);
+    await rm(tpexRawPath);
+    await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
+
+    const before = await readFundamental(root, '5483');
+    await applyQuarterlyFinancials(root, '2025-Q1');
+
+    await access(path);
+    const after = await readFundamental(root, '5483');
+    assert.equal(after.market, 'twse');
+    assert.deepEqual(after.quarterly, createdFromTpex.quarterly);
+    console.log(`[r4-1 metadata-mismatch] createdMarket=${sourceMarket} fileMarket=${after.market} tpexRaw=absent before=${JSON.stringify(before.quarterly.rows)} after=${JSON.stringify(after.quarterly.rows)} file=present`);
+  });
+});
+
+test('quarterly incremental upsert overwrites the same company and quarter key', async () => {
+  await withTempDir(async (root) => {
+    await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
+    await applyQuarterlyFinancials(root, '2025-Q1');
+    const before = (await readFundamental(root, '2330')).quarterly.rows;
+    const revised = Buffer.from(makeSiiQuarterlyFixture(1).toString('utf8')
+      .replace('<td>493,395,076</td>', '<td>839,253,664</td>')
+      .replace('<td>407,080,808</td>', '<td>839,253,664</td>')
+      .replaceAll('<td>360,732,661</td>', '<td>839,253,664</td>'));
+    await writeRaw(root, 'twse', '2025-Q1', revised);
+
+    await applyQuarterlyFinancials(root, '2025-Q1');
+
+    const after = (await readFundamental(root, '2330')).quarterly.rows;
+    assert.deepEqual(before, [[20251, 58.79, 48.51, 42.98]]);
+    assert.deepEqual(after, [[20251, 100, 100, 100]]);
+    console.log(`[r4-2 same-key-upsert] before=${JSON.stringify(before)} after=${JSON.stringify(after)} rowCount=${after.length}`);
+  });
+});
+
+test('isolated full rebuild removes a stale quarterly row after the company disappears from raw', async () => {
+  await withTempDir(async (root) => {
+    await writeRaw(root, 'twse', '2025-Q1', makeSiiQuarterlyFixture(1));
+    await applyQuarterlyFinancials(root, '2025-Q1');
+    const before = (await readFundamental(root, '2330')).quarterly.rows;
+    const revised = Buffer.from(makeSiiQuarterlyFixture(1).toString('utf8')
+      .replaceAll('<td>2330</td>', '<td>3333</td>'));
+    await writeRaw(root, 'twse', '2025-Q1', revised);
+
+    const summary = await buildDerived({ rootDir: root });
+
+    await assert.rejects(readFundamental(root, '2330'), /ENOENT/);
+    assert.equal(summary.quarterlySeasons, 1);
+    console.log(`[r4-3 full-rebuild] root=${root} before=${JSON.stringify(before)} after=FILE_ABSENT quarter=absent`);
   });
 });
 

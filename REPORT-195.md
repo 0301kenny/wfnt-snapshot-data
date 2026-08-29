@@ -475,6 +475,176 @@ tests/run.test.mjs        |   2 +
 
 `git diff --check` 輸出為空,exit 0。
 
+## r4
+
+狀態: **READY_FOR_REVIEW**。r4 修正輪 1 完成；驗收 1～7 全部 PASS。未修改四份 ticket、未打真實網路、未在 repo 根目錄執行 `build-derived`、未寫真 `data/`、未 commit。
+
+### 實作與死碼決策
+
+- `applyQuarterlyFinancials` 不再呼叫 `reconcileFundamentalPeriod`，增量季度路徑只保留解析、差分、TWSE 優先碰撞處理與 `upsertFundamental`。
+- `reconcileFundamentalPeriod(rootDir, kind, key, presentIds)` 的簽名與全域掃描行為已還原成 `a36cfe0`；r3 新增的 `{ market } = {}` 與 `current.market !== market` 篩選皆移除。
+- `reconcileFundamentalPeriod` 內的 quarterly 分支選擇保留。理由：此函式是具名 export，保留既有底層能力可縮小變更面；更重要的是三序列感知、三者皆空才刪檔、寫回仍帶 `quarterly` 的 r1 HF7 保護維持原樣。production 的 quarterly 套用路徑已沒有呼叫點，因此不會恢復被 r4 取消的增量收斂。
+
+### r4-1 代價論證自驗
+
+- **(a) PASS，同鍵數值修正仍會收斂。** 固化 Q1 fixture 首次產生 `2330 [[20251,58.79,48.51,42.98]]`；將同一公司同一季的三個絕對數改為營收值後再套用，輸出成為 `[[20251,100,100,100]]`，列數仍為 1。這直接驗證 `upsertRows` 以 `q` 同鍵覆寫，未新增第二列。
+- **(c) PASS，全量重建仍是最終收斂保證。** 測試只在隔離 root `/var/folders/t2/w9vv7vcs3b3808y8k70bkpp80000gn/T/wfnt-quarterly-test-ZMkGmQ` 呼叫 `buildDerived({ rootDir })`。重建前 `2330` 有 `[[20251,58.79,48.51,42.98]]`；從 raw 移除 2330 後，重建結果為 `FILE_ABSENT`，因此該季列確定消失。該 tmpdir 由測試結束後清除。
+
+### 驗收 1：三種缺席形態不誤刪 — PASS
+
+三條測試都先讀出 before、套用同季、以 `access` 證明檔案存在，再逐值比對 after：
+
+```text
+# [r4-1 absent-market] before=[[20252,26.06,15.91,9.93]] after=[[20252,26.06,15.91,9.93]] file=present
+# Subtest: quarterly incremental apply preserves a row when its market raw is absent
+ok 48
+
+# [r4-1 complete-raw-absence] before=[[20251,10,10,10]] after=[[20251,10,10,10]] file=present
+# Subtest: quarterly incremental apply preserves a row absent from complete raw for both markets
+ok 49
+
+# [r4-1 metadata-mismatch] createdMarket=tpex fileMarket=twse tpexRaw=absent before=[[20251,14.95,5.78,7.4]] after=[[20251,14.95,5.78,7.4]] file=present
+# Subtest: quarterly incremental apply ignores file market metadata when preserving a TPEX-sourced row
+ok 50
+```
+
+形態對應：① 6488 所屬 TPEX raw 完全缺席，只有 TWSE Q1/Q2；② TWSE/TPEX Q1 raw 都存在，但 9999 不在任一份；③ 先用 production `applyQuarterlyFinancials` 從 TPEX Q1 raw 實際產生 5483 季列並確認 `createdMarket=tpex`，再模擬 valuation 將檔案 metadata 覆寫成 `market: 'twse'`、移除 TPEX raw，只留下 TWSE Q1 raw後重套。③ 明確重現 r3 修法失敗的語意錯配格。
+
+### 驗收 2：upsert 同鍵覆寫 — PASS
+
+```text
+# [r4-2 same-key-upsert] before=[[20251,58.79,48.51,42.98]] after=[[20251,100,100,100]] rowCount=1
+# Subtest: quarterly incremental upsert overwrites the same company and quarter key
+ok 51
+```
+
+兩次套用輸出並陳且 `rowCount=1`，為代價論證 (a) 的抵達證明。
+
+### 驗收 3：隔離全量重建收斂 — PASS
+
+```text
+# [r4-3 full-rebuild] root=/var/folders/t2/w9vv7vcs3b3808y8k70bkpp80000gn/T/wfnt-quarterly-test-ZMkGmQ before=[[20251,58.79,48.51,42.98]] after=FILE_ABSENT quarter=absent
+# Subtest: isolated full rebuild removes a stale quarterly row after the company disappears from raw
+ok 52
+```
+
+只呼叫匯出的 `buildDerived({ rootDir: <tmpdir> })`，沒有執行 repo 根目錄 CLI；為代價論證 (c) 的抵達證明。
+
+### 驗收 4：valuation／revenue 零迴歸 — PASS
+
+驗證方式與結果：
+
+1. `git diff a36cfe0 -- scripts/lib/derived.mjs` 只有 `applyQuarterlyFinancials` 的一個 hunk：移除 `foundCurrent` 與 quarterly reconcile，`reconcileFundamentalPeriod` 本體沒有 diff。故其簽名、valuation/revenue 分支、全域 `presentIds` 行為與 `a36cfe0` 位元級相同。
+2. `rg -n "reconcileFundamentalPeriod\\(" scripts tests/quarterly-backfill.test.mjs` 顯示 production 呼叫只剩：
+
+   ```text
+   scripts/lib/derived.mjs:1022: ... 'valuation' ...
+   scripts/lib/derived.mjs:1098: ... 'revenue' ...
+   ```
+
+   沒有 production quarterly 呼叫。
+3. 全套 81/81 綠燈，既有 valuation/revenue 測試全數通過；未修改 `applyMonthlyRevenue`、`scripts/run.mjs` 或日更 endpoints。
+
+### 驗收 5：r1 HF7 刪檔保護 — PASS
+
+同一個只剩 quarterly 的檔案依序跑 valuation reconcile，再加入 revenue 舊列並跑 revenue reconcile；兩次都未刪檔，最終實跑輸出：
+
+```text
+# [r4-5 quarterly-only-protection] file=present valuation=[] revenue=[] quarterly=[[20251,58.79,48.51,42.98]]
+# Subtest: reconcile preserves quarterly-only files and quarterly surviving removal of the last old row
+ok 46
+```
+
+刪檔條件仍為 valuation、revenue、quarterly 三序列皆空；寫回物件仍包含 `quarterly`。
+
+### 驗收 6：完整測試 — PASS
+
+改前 a3 基線為 78/78；改後為 81/81，淨增 3。票面授權移除的 r3 驗收 2「增量 reconcile 權威空集合會刪舊列」測試已改寫成 r4 的完整 raw 仍保留舊列；另把 r3 驗收 1 擴成三種缺席形態，並新增同鍵覆寫與全量重建收斂測試。沒有刪除其他測試、skip、放寬 assertion 或吞錯。
+
+`node --test tests/` 完整尾段：
+
+```text
+ok 81 - monthly revenue warns and deterministically drops rows outside the raw month key
+  ---
+  duration_ms: 5.089697
+  ...
+1..81
+# tests 81
+# suites 0
+# pass 81
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2995.443263
+exit_code=0
+```
+
+r3-2 仍在同一全套中通過，缺值、非數字、負數的輸出分別為：
+
+```text
+# [r3-2 missing] exit=1 stderr="Error: --delay-ms must be a non-negative number, got: NaN"
+# [r3-2 non-numeric] exit=1 stderr="Error: --delay-ms must be a non-negative number, got: NaN"
+# [r3-2 negative] exit=1 stderr="Error: --delay-ms must be a non-negative number, got: -1"
+```
+
+r1/r2 的 parser、六組 HF5 錨點、累計與選表/插欄負向對照、前季缺席、Q1 CLI、隔離 backfill 串接及 r2 production 欄位共用等既有測試也全數繼續通過；a1～a3 的持久證據保留在本 report 上方，未重寫或刪除。
+
+### 驗收 7：真 `data/` 零變動 — PASS
+
+開工標記位於 repo 外 `/tmp/ticket-195-r4-start.sWrV4r`。最終執行：
+
+```text
+find data -type f -newer /tmp/ticket-195-r4-start.sWrV4r -print | head -20
+(no output)
+exit_code=0
+```
+
+所有寫入型 fixture 與 `buildDerived` 都以 `mkdtemp` 產生的隔離 root 執行，未對真 `data/` 寫檔。
+
+### 被移除的既有能力與替代保證
+
+- **已移除（票面明確授權）：quarterly 的增量 reconcile 收斂能力。** 同一季增量重跑時，若某公司從 raw 完全消失，既有該季列不再由 `applyQuarterlyFinancials` 清除；r3 的按 market 權威集合與「權威空集合刪舊列」能力一併移除。
+- **已移除（上述機制的 API 配套）：** `reconcileFundamentalPeriod` 的可選 `{ market }` scope。簽名回到 `a36cfe0`，valuation/revenue 不受影響。
+- **已移除（票面授權的測試例外）：** r3 驗收 2 要求增量清除舊季列的測試，改寫成 r4 驗收 1②「兩市場 raw 齊全但該股缺席仍保留」。
+- **替代保證：** 同公司同季的數值修正仍由 upsert 同鍵覆寫立即收斂；公司整季列完全消失的情形則由 `buildDerived` 先清空 `data/derived`、再從 raw 全量重建而最終收斂。兩者都已有上述隔離 fixture 抵達證明。
+- 除以上三項外，沒有移除其他既有能力、序列、檔案、測試或 gate。`kind === 'quarterly'` 的底層 reconcile 分支與 HF7 三序列刪檔保護均保留；r3-2 `--delay-ms` 修正保留；P3 Repeated Switches 未重構。
+
+### r4 最終 working tree
+
+r4 實際改動檔案：
+
+```text
+REPORT-195.md
+scripts/lib/derived.mjs
+tests/quarterly-backfill.test.mjs
+```
+
+`git status --short`：
+
+```text
+ M REPORT-195.md
+ M scripts/lib/derived.mjs
+ M tests/quarterly-backfill.test.mjs
+?? REPORT-070.md
+?? REPORT-189.md
+?? REPORT-192.md
+?? REPORT-194.md
+```
+
+四份 `REPORT-070.md` / `REPORT-189.md` / `REPORT-192.md` / `REPORT-194.md` 仍是票面 HF10 指定的既有未追蹤雜訊，r4 未修改。
+
+`git diff --stat`：
+
+```text
+REPORT-195.md                     | 170 ++++++++++++++++++++++++++++++++++++++
+ scripts/lib/derived.mjs           |  12 +--
+ tests/quarterly-backfill.test.mjs |  93 +++++++++++++++++----
+ 3 files changed, 251 insertions(+), 24 deletions(-)
+```
+
+`git diff --check` 輸出為空，exit 0；`git diff --diff-filter=D --name-only` 輸出為空。
+
 ## r3
 
 狀態: **READY_FOR_REVIEW**。r3 修正輪 1 完成;r3-1、r3-2 皆 PASS。未改票面、未打真實網路、未執行 repo 根目錄 `build-derived`、未寫真 `data/`、未 commit。
