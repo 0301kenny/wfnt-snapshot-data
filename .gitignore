@@ -1,5 +1,6 @@
 # Snapshot data is local-only — never versioned in git (too large; see TICKET-070)
 data/
 
-# Backfill runtime checkpoint
+# Backfill checkpoint and gap-scan runtime cache
 .backfill-progress.json
+.gap-scan-cache.json

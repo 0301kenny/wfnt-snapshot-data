@@ -53,7 +53,7 @@ node scripts/backfill.mjs --from 2021-07-01 --to 2026-06-30
 node scripts/backfill.mjs --from 2021-07-01 --to 2021-07-31 --out ./.backfill-out
 ```
 
-`scripts/detect-gaps.mjs` 依市場分開計算已覆蓋日期。TWSE 覆蓋是 `mi_index_hist`、`t86_hist`、`mi_margn_hist`、`bwibbu_hist` 與 `stock_day_all` 的聯集;TPEX 覆蓋是 `daily_quotes_hist`、`insti_hist`、`margin_hist` 與 `mainboard_close` 的聯集。它會掃描工作日,再以官方 TWSE `MI_INDEX` 判定候選日是否為交易日;預設範圍是兩市場已覆蓋的最小日到最大日,`--from` / `--to` 可覆寫,`--delay-ms` 預設 3000。
+`scripts/detect-gaps.mjs` 依市場分開計算已覆蓋日期。TWSE 覆蓋是 `mi_index_hist`、`t86_hist`、`mi_margn_hist`、`bwibbu_hist` 與 `stock_day_all` 的聯集;TPEX 覆蓋是 `daily_quotes_hist`、`insti_hist`、`margin_hist`、`pe_hist` 與 `mainboard_close` 的聯集。它會掃描工作日,再以官方 TWSE `MI_INDEX` 判定候選日是否為交易日;預設範圍是兩市場已覆蓋的最小日到最大日,`--from` / `--to` 可覆寫,`--delay-ms` 預設 3000。
 
 明確非交易日會快取到目標 root 的 `.gap-scan-cache.json`,並保留官方 `stat` 原文;請求失敗、逾時或非 200 不會寫入快取。今天與未來日期不納入候選。偵測不可與 `backfill.mjs` 併行。
 
