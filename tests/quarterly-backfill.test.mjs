@@ -158,6 +158,16 @@ test('reconcile preserves quarterly-only files and quarterly surviving removal o
   });
 });
 
+test('reconcile rejects an unregistered fundamental kind', async () => {
+  await withTempDir(async (root) => {
+    await assert.rejects(
+      reconcileFundamentalPeriod(root, 'unregistered', 20250101, new Set()),
+      /unknown fundamental kind: unregistered/,
+    );
+    console.log('[ticket-198 unknown-kind] Error: unknown fundamental kind: unregistered');
+  });
+});
+
 test('Q2 raw without same-year Q1 produces no quarterly rows', async () => {
   await withTempDir(async (root) => {
     await writeRaw(root, 'twse', '2025-Q2', makeSiiQuarterlyFixture(2));

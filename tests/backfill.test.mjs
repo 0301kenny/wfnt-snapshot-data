@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { backfillOptionsFromArgs, runBackfill } from '../scripts/backfill.mjs';
@@ -18,8 +18,8 @@ import {
   parseTwseMiMargnHist,
   parseTwseBwibbuHist,
   parseTwseT86Hist,
-  stableDerivedString,
 } from '../scripts/lib/derived.mjs';
+import { fileMap, writeDerived } from './derived-test-helpers.mjs';
 
 const silentLogger = { log() {}, warn() {} };
 
@@ -39,31 +39,8 @@ async function writeRaw(root, sourceDataset, date, body) {
   return path;
 }
 
-async function writeDerived(root, relativePath, value) {
-  const path = join(root, 'data', 'derived', relativePath);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, stableDerivedString(value));
-}
-
 async function readJson(root, relativePath) {
   return JSON.parse(await readFile(join(root, relativePath), 'utf8'));
-}
-
-async function fileMap(dir, base = dir) {
-  const result = {};
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch (error) {
-    if (error.code === 'ENOENT') return result;
-    throw error;
-  }
-  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) Object.assign(result, await fileMap(path, base));
-    else result[path.slice(base.length + 1)] = await readFile(path);
-  }
-  return result;
 }
 
 function jsonBytes(value) {
@@ -291,11 +268,13 @@ test('backfill endpoints remain separate from the unchanged daily endpoint list'
   assert.equal(BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.sourceDataset, 'twse/monthly_revenue_hist');
   assert.equal(BACKFILL_ENDPOINTS.tpex_monthly_revenue_hist.sourceDataset, 'tpex/monthly_revenue_hist');
   assert.deepEqual(BACKFILL_ENDPOINTS.twse_quarterly_fin_hist, {
+    cadence: 'quarterly',
     sourceDataset: 'twse/quarterly_fin_hist',
     url: 'https://mopsov.twse.com.tw/mops/web/ajax_t163sb04',
     typek: 'sii',
   });
   assert.deepEqual(BACKFILL_ENDPOINTS.tpex_quarterly_fin_hist, {
+    cadence: 'quarterly',
     sourceDataset: 'tpex/quarterly_fin_hist',
     url: 'https://mopsov.twse.com.tw/mops/web/ajax_t163sb04',
     typek: 'otc',

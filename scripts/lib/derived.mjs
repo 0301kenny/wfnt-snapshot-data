@@ -15,6 +15,29 @@ const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
 const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
 export const QUARTERLY_COLS = ['q', 'gm', 'om', 'nm'];
+export const FUNDAMENTAL_SERIES = Object.freeze({
+  valuation: Object.freeze({
+    cols: VALUATION_COLS,
+    window: DEFAULT_VALUATION_WINDOW,
+    updatesFundamentalsUpdated: true,
+    updatedFromKey: intToIso,
+    incomingWinsMetadata: true,
+  }),
+  revenue: Object.freeze({
+    cols: REVENUE_COLS,
+    window: DEFAULT_REVENUE_WINDOW,
+    updatesFundamentalsUpdated: true,
+    updatedFromKey: monthIntToIso,
+    incomingWinsMetadata: false,
+  }),
+  quarterly: Object.freeze({
+    cols: QUARTERLY_COLS,
+    window: DEFAULT_QUARTERLY_WINDOW,
+    updatesFundamentalsUpdated: false,
+    updatedFromKey: null,
+    incomingWinsMetadata: false,
+  }),
+});
 export const MOPS_QUARTERLY_FIELDS = {
   id: '公司代號',
   name: '公司名稱',
@@ -523,10 +546,36 @@ function monthIntToIso(value) {
   return `${text.slice(0, 4)}-${text.slice(4, 6)}-01`;
 }
 
-function fundamentalsUpdated(valuationRows, revenueRows) {
+function fundamentalSeriesFor(kind) {
+  const definition = FUNDAMENTAL_SERIES[kind];
+  if (!definition) throw new Error(`unknown fundamental kind: ${kind}`);
+  return definition;
+}
+
+function fundamentalRows(current) {
+  const result = {};
+  for (const kind of Object.keys(FUNDAMENTAL_SERIES)) {
+    result[kind] = current?.[kind]?.rows ?? [];
+  }
+  return result;
+}
+
+function fundamentalSeriesPayload(rowsByKind) {
+  const result = {};
+  for (const [kind, definition] of Object.entries(FUNDAMENTAL_SERIES)) {
+    result[kind] = { cols: definition.cols, rows: rowsByKind[kind] };
+  }
+  return result;
+}
+
+function fundamentalsUpdated(rowsByKind) {
   const values = [];
-  if (valuationRows.length) values.push(intToIso(valuationRows.at(-1)[0]));
-  if (revenueRows.length) values.push(monthIntToIso(revenueRows.at(-1)[0]));
+  for (const [kind, definition] of Object.entries(FUNDAMENTAL_SERIES)) {
+    const rows = rowsByKind[kind];
+    if (definition.updatesFundamentalsUpdated && rows.length) {
+      values.push(definition.updatedFromKey(rows.at(-1)[0]));
+    }
+  }
   values.sort();
   return values.at(-1) ?? null;
 }
@@ -703,36 +752,30 @@ async function upsertTdcc(rootDir, id, row, window) {
 }
 
 async function upsertFundamental(rootDir, item, kind, row, window) {
+  const definition = fundamentalSeriesFor(kind);
   const path = join(rootDir, 'data', 'derived', 'fundamentals', p2(item.id), `${item.id}.json`);
   const current = await readExistingJson(path, {
     id: item.id,
     name: item.name,
     market: item.market,
     updated: null,
-    valuation: { cols: VALUATION_COLS, rows: [] },
-    revenue: { cols: REVENUE_COLS, rows: [] },
-    quarterly: { cols: QUARTERLY_COLS, rows: [] },
+    ...fundamentalSeriesPayload(fundamentalRows()),
   });
-  const valuationRows = kind === 'valuation'
-    ? upsertRows(current.valuation?.rows ?? [], row, window)
-    : current.valuation?.rows ?? [];
-  const revenueRows = kind === 'revenue'
-    ? upsertRows(current.revenue?.rows ?? [], row, window)
-    : current.revenue?.rows ?? [];
-  const quarterlyRows = kind === 'quarterly'
-    ? upsertRows(current.quarterly?.rows ?? [], row, window)
-    : current.quarterly?.rows ?? [];
-  const incomingWinsMetadata = kind === 'valuation'
+  const rowsByKind = fundamentalRows(current);
+  rowsByKind[kind] = upsertRows(
+    rowsByKind[kind],
+    row,
+    window === undefined ? definition.window : window,
+  );
+  const incomingWinsMetadata = definition.incomingWinsMetadata
     || current.market !== 'twse'
     || item.market === 'twse';
   const next = {
     id: item.id,
     name: incomingWinsMetadata ? item.name : current.name,
     market: incomingWinsMetadata ? item.market : current.market,
-    updated: fundamentalsUpdated(valuationRows, revenueRows),
-    valuation: { cols: VALUATION_COLS, rows: valuationRows },
-    revenue: { cols: REVENUE_COLS, rows: revenueRows },
-    quarterly: { cols: QUARTERLY_COLS, rows: quarterlyRows },
+    updated: fundamentalsUpdated(rowsByKind),
+    ...fundamentalSeriesPayload(rowsByKind),
   };
   return writeDerivedJson(path, next);
 }
@@ -757,39 +800,24 @@ async function listFundamentalPaths(rootDir) {
 }
 
 export async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds) {
+  fundamentalSeriesFor(kind);
   let written = 0;
   for (const path of await listFundamentalPaths(rootDir)) {
     const current = await readExistingJson(path, null);
     if (!current || presentIds.has(String(current.id))) continue;
-    const valuationRows = current.valuation?.rows ?? [];
-    const revenueRows = current.revenue?.rows ?? [];
-    const quarterlyRows = current.quarterly?.rows ?? [];
-    const currentRows = kind === 'valuation'
-      ? valuationRows
-      : kind === 'revenue'
-        ? revenueRows
-        : quarterlyRows;
+    const rowsByKind = fundamentalRows(current);
+    const currentRows = rowsByKind[kind];
     if (!currentRows.some((row) => row[0] === key)) continue;
-    const nextValuationRows = kind === 'valuation'
-      ? valuationRows.filter((row) => row[0] !== key)
-      : valuationRows;
-    const nextRevenueRows = kind === 'revenue'
-      ? revenueRows.filter((row) => row[0] !== key)
-      : revenueRows;
-    const nextQuarterlyRows = kind === 'quarterly'
-      ? quarterlyRows.filter((row) => row[0] !== key)
-      : quarterlyRows;
-    if (nextValuationRows.length === 0 && nextRevenueRows.length === 0 && nextQuarterlyRows.length === 0) {
+    rowsByKind[kind] = currentRows.filter((row) => row[0] !== key);
+    if (Object.values(rowsByKind).every((rows) => rows.length === 0)) {
       await rm(path);
       written += 1;
       continue;
     }
     const next = {
       ...current,
-      updated: fundamentalsUpdated(nextValuationRows, nextRevenueRows),
-      valuation: { cols: VALUATION_COLS, rows: nextValuationRows },
-      revenue: { cols: REVENUE_COLS, rows: nextRevenueRows },
-      quarterly: { cols: QUARTERLY_COLS, rows: nextQuarterlyRows },
+      updated: fundamentalsUpdated(rowsByKind),
+      ...fundamentalSeriesPayload(rowsByKind),
     };
     if (await writeDerivedJson(path, next)) written += 1;
   }

@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { BACKFILL_ENDPOINTS } from '../scripts/endpoints.mjs';
 import {
   COVERAGE_SOURCES,
   collectCoveredDates,
@@ -42,20 +43,40 @@ function responseFor(bytes, status = 200) {
   };
 }
 
-test('coverage sources match every daily raw namespace on disk', async () => {
-  const closeSource = {
-    twse: 'twse/stock_day_all',
-    tpex: 'tpex/mainboard_close',
-  };
+const closeSource = {
+  twse: 'twse/stock_day_all',
+  tpex: 'tpex/mainboard_close',
+};
+
+async function rawHistNamespaces(rootDir = repoRoot) {
+  const namespaces = [];
   for (const market of ['twse', 'tpex']) {
-    const entries = await readdir(join(repoRoot, 'data', 'raw', market), { withFileTypes: true });
-    const dailyNamespaces = entries
-      .filter((entry) => (
-        entry.isDirectory() &&
-        entry.name.endsWith('_hist') &&
-        entry.name !== 'monthly_revenue_hist'
-      ))
-      .map((entry) => `${market}/${entry.name}`);
+    const entries = await readdir(join(rootDir, 'data', 'raw', market), { withFileTypes: true });
+    namespaces.push(...entries
+      .filter((entry) => entry.isDirectory() && /_hist$/.test(entry.name))
+      .map((entry) => `${market}/${entry.name}`));
+  }
+  return namespaces.sort();
+}
+
+test('every backfill endpoint declares a supported cadence', () => {
+  const allowed = new Set(['daily', 'monthly', 'quarterly']);
+  for (const [key, endpoint] of Object.entries(BACKFILL_ENDPOINTS)) {
+    assert.equal(allowed.has(endpoint.cadence), true, `${key} has invalid cadence: ${endpoint.cadence}`);
+  }
+});
+
+test('every raw historical namespace on disk is registered as a backfill endpoint', async () => {
+  const registered = new Set(Object.values(BACKFILL_ENDPOINTS).map((endpoint) => endpoint.sourceDataset));
+  const unregistered = (await rawHistNamespaces()).filter((source) => !registered.has(source));
+  assert.deepEqual(unregistered, [], `unregistered raw historical namespaces: ${unregistered.join(',')}`);
+});
+
+test('coverage sources exactly match daily backfill endpoints plus each market close source', () => {
+  for (const market of ['twse', 'tpex']) {
+    const dailyNamespaces = Object.values(BACKFILL_ENDPOINTS)
+      .filter((endpoint) => endpoint.cadence === 'daily' && endpoint.sourceDataset.startsWith(`${market}/`))
+      .map((endpoint) => endpoint.sourceDataset);
     dailyNamespaces.push(closeSource[market]);
     assert.deepEqual(
       [...COVERAGE_SOURCES[market]].sort(),

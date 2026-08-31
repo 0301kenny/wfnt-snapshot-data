@@ -5,6 +5,8 @@ This repo stores official public after-market snapshots for TW Stock Radar. It i
 Rules for agents:
 
 - Endpoint allowlist is only the 8 daily endpoints, 2 current monthly revenue endpoints, the TDCC weekly endpoint, the 2 MOPS monthly and 2 MOPS quarterly backfill endpoints, and the 4 TWSE plus 4 TPEX daily backfill-only legacy endpoints declared in `scripts/endpoints.mjs`; backfill-only endpoints must not enter the daily pipeline.
+- Every `BACKFILL_ENDPOINTS` entry must declare `cadence` as `daily`, `monthly`, or `quarterly`; daily gap coverage is derived from the entries declared `daily` plus each market's close source.
+- CLI numeric flags in backfill and gap scripts must use `scripts/lib/cli.mjs`; a bare flag is invalid and must reach the existing numeric guard as `Number.NaN`.
 - Do not add other URLs or undocumented data sources.
 - Keep zero npm dependencies. Use Node 22 built-ins only.
 - Raw snapshots under `data/raw/` are authoritative bytes from official responses. Do not reformat, filter, sort, or prettify them.
@@ -22,5 +24,6 @@ Rules for agents:
 - `data/derived/` is a generated read-optimization layer. Raw snapshots remain authoritative, and derived files must be fully rebuildable from raw with `scripts/build-derived.mjs`.
 - Derived symbol outputs must exclude only pure numeric 6-character IDs (`/^\d{6}$/`). Use the same rule for daily symbol series and TDCC series.
 - Fundamentals derived outputs use the same pure numeric 6-character ID exclusion rule and combine daily TWSE/TPEX valuation, monthly TWSE/TPEX revenue, and MOPS quarterly general-industry margins; monthly OpenAPI raw takes priority, with MOPS historical raw as fallback.
+- Fundamentals series definitions belong in the single registry in `scripts/lib/derived.mjs`, including columns, default windows, updated-date participation, and metadata precedence.
 - Incremental derived updates in `scripts/run.mjs` and full rebuilds must share `scripts/lib/derived.mjs`; do not create a second transformation path.
 - Derived serialization must be deterministic and write-on-change only, so no-op reruns produce no byte-level diff.

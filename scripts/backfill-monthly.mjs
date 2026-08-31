@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { BACKFILL_ENDPOINTS } from './endpoints.mjs';
+import { parseNumericFlag } from './lib/cli.mjs';
 import { validateMopsMonthlyRevenueHtml } from './lib/derived.mjs';
 import { writeFileEnsured } from './lib/io.mjs';
 
@@ -165,15 +166,18 @@ export async function runMonthlyBackfill({
   return summary;
 }
 
-const isCli = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
-if (isCli) {
-  const args = parseArgs(process.argv.slice(2));
-  runMonthlyBackfill({
+export function monthlyBackfillOptionsFromArgs(args) {
+  return {
     rootDir: args.out ?? process.cwd(),
     fromMonth: args.from,
     toMonth: args.to,
-    delayMs: args['delay-ms'] === undefined ? 3000 : Number(args['delay-ms']),
-  }).catch((error) => {
+    delayMs: parseNumericFlag(args['delay-ms'], 3000),
+  };
+}
+
+const isCli = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isCli) {
+  runMonthlyBackfill(monthlyBackfillOptionsFromArgs(parseArgs(process.argv.slice(2)))).catch((error) => {
     console.error(error?.stack ?? error);
     process.exitCode = 1;
   });
