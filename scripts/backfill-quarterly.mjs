@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { BACKFILL_ENDPOINTS } from './endpoints.mjs';
+import { parseNumericFlag } from './lib/cli.mjs';
 import { parseMopsQuarterlyFinHtml } from './lib/derived.mjs';
 import { writeFileEnsured } from './lib/io.mjs';
 
@@ -178,19 +179,18 @@ export async function runQuarterlyBackfill({
   return summary;
 }
 
-const isCli = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
-if (isCli) {
-  const args = parseArgs(process.argv.slice(2));
-  runQuarterlyBackfill({
+export function quarterlyBackfillOptionsFromArgs(args) {
+  return {
     rootDir: args.out ?? process.cwd(),
     fromSeason: args.from,
     toSeason: args.to,
-    delayMs: args['delay-ms'] === undefined
-      ? 3000
-      : typeof args['delay-ms'] === 'string'
-        ? Number(args['delay-ms'])
-        : Number.NaN,
-  }).catch((error) => {
+    delayMs: parseNumericFlag(args['delay-ms'], 3000),
+  };
+}
+
+const isCli = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (isCli) {
+  runQuarterlyBackfill(quarterlyBackfillOptionsFromArgs(parseArgs(process.argv.slice(2)))).catch((error) => {
     console.error(error?.stack ?? error);
     process.exitCode = 1;
   });

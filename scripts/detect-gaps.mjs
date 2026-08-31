@@ -2,6 +2,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { BACKFILL_ENDPOINTS } from './endpoints.mjs';
+import { parseNumericFlag } from './lib/cli.mjs';
 import { isTwseMiIndexTradingDay } from './lib/derived.mjs';
 import { parseGregorianDate, taipeiIsoDate } from './lib/date.mjs';
 import { listJsonDates, readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
@@ -210,22 +211,26 @@ export async function detectGaps({
   return { covered, fromIso, toIso, weekdays, candidates, checked, cachedNonTrading, gaps, dates, datesCsv };
 }
 
+export function detectGapsOptionsFromArgs(args) {
+  return {
+    rootDir: String(args.out ?? process.cwd()),
+    fromIso: args.from,
+    toIso: args.to,
+    delayMs: parseNumericFlag(args['delay-ms'], 3000),
+    datesOnly: Boolean(args['dates-only']),
+    coverageOnly: Boolean(args['coverage-only']),
+  };
+}
+
 async function main() {
-  const args = parseArgs(process.argv.slice(2));
-  const rootDir = String(args.out ?? process.cwd());
-  if (args['coverage-only']) {
-    const covered = await collectCoveredDates(rootDir);
+  const options = detectGapsOptionsFromArgs(parseArgs(process.argv.slice(2)));
+  if (options.coverageOnly) {
+    const covered = await collectCoveredDates(options.rootDir);
     console.log(`twse_covered=${covered.twse.size}`);
     console.log(`tpex_covered=${covered.tpex.size}`);
     return;
   }
-  await detectGaps({
-    rootDir,
-    fromIso: args.from,
-    toIso: args.to,
-    delayMs: Number(args['delay-ms'] ?? 3000),
-    datesOnly: Boolean(args['dates-only']),
-  });
+  await detectGaps(options);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

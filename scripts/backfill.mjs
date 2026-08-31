@@ -21,6 +21,7 @@ import {
   parseTwseT86Hist,
 } from './lib/derived.mjs';
 import { taipeiIsoDate, yyyyOf } from './lib/date.mjs';
+import { parseNumericFlag } from './lib/cli.mjs';
 import { readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
 
 const USER_AGENT =
@@ -389,8 +390,8 @@ export function backfillOptionsFromArgs(args) {
     fromIso: args.from ?? (args.dates === undefined ? '2024-01-01' : undefined),
     toIso: args.to ?? (args.dates === undefined ? '2024-01-31' : undefined),
     dates: args.dates,
-    delayMs: Number(args['delay-ms'] ?? 3000),
-    symbolWindow: Number(args.window ?? DEFAULT_SYMBOL_WINDOW),
+    delayMs: parseNumericFlag(args['delay-ms'], 3000),
+    symbolWindow: parseNumericFlag(args.window, DEFAULT_SYMBOL_WINDOW),
   };
 }
 

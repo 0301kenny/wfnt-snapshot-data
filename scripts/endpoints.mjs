@@ -106,52 +106,64 @@ export const ENDPOINTS = [
 // ENDPOINTS so scripts/run.mjs never includes them in the daily pipeline.
 export const BACKFILL_ENDPOINTS = {
   twse_monthly_revenue_hist: {
+    cadence: 'monthly',
     sourceDataset: 'twse/monthly_revenue_hist',
     url: (rocYear, month, variant) => `https://mopsov.twse.com.tw/nas/t21/sii/t21sc03_${rocYear}_${month}_${variant}.html`,
   },
   tpex_monthly_revenue_hist: {
+    cadence: 'monthly',
     sourceDataset: 'tpex/monthly_revenue_hist',
     url: (rocYear, month, variant) => `https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_${rocYear}_${month}_${variant}.html`,
   },
   twse_quarterly_fin_hist: {
+    cadence: 'quarterly',
     sourceDataset: 'twse/quarterly_fin_hist',
     url: 'https://mopsov.twse.com.tw/mops/web/ajax_t163sb04',
     typek: 'sii',
   },
   tpex_quarterly_fin_hist: {
+    cadence: 'quarterly',
     sourceDataset: 'tpex/quarterly_fin_hist',
     url: 'https://mopsov.twse.com.tw/mops/web/ajax_t163sb04',
     typek: 'otc',
   },
   twse_mi_index_hist: {
+    cadence: 'daily',
     sourceDataset: 'twse/mi_index_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=${ymd}&type=ALLBUT0999&response=json`,
   },
   twse_t86_hist: {
+    cadence: 'daily',
     sourceDataset: 'twse/t86_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/fund/T86?date=${ymd}&selectType=ALL&response=json`,
   },
   twse_mi_margn_hist: {
+    cadence: 'daily',
     sourceDataset: 'twse/mi_margn_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date=${ymd}&selectType=ALL&response=json`,
   },
   twse_bwibbu_hist: {
+    cadence: 'daily',
     sourceDataset: 'twse/bwibbu_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/afterTrading/BWIBBU_d?date=${ymd}&selectType=ALL&response=json`,
   },
   tpex_daily_quotes_hist: {
+    cadence: 'daily',
     sourceDataset: 'tpex/daily_quotes_hist',
     url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&type=EW&response=json`,
   },
   tpex_insti_hist: {
+    cadence: 'daily',
     sourceDataset: 'tpex/insti_hist',
     url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade?type=Daily&sect=EW&date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&response=json`,
   },
   tpex_margin_hist: {
+    cadence: 'daily',
     sourceDataset: 'tpex/margin_hist',
     url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/margin/balance?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&response=json`,
   },
   tpex_pe_hist: {
+    cadence: 'daily',
     sourceDataset: 'tpex/pe_hist',
     url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/afterTrading/peQryDate?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&response=json`,
   },
