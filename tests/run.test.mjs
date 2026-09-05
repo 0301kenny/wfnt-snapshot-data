@@ -28,6 +28,12 @@ function fixtureBodies(overrides = {}) {
     tpex_mainboard_close: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', Close: '1' }]),
     tpex_3insti: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', TotalDifference: '1' }]),
     tpex_margin: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '00679B', CompanyName: '元大美債20年', MarginPurchaseBalance: '1' }]),
+    twse_insider_holding: jsonBody([{ '資料年月': '11506', '公司代號': '2330', '選任時持股 ': '1', '設質股數': '0' }]),
+    tpex_insider_holding: jsonBody([{ '資料年月': '11506', '公司代號': '6488', '選任時持股': '1', '設質股數': '0' }]),
+    twse_insider_transfer: jsonBody([{ '出表日期': '1150706', '公司代號': '2330', '申報人身分': '董事', '預定轉讓方式及股數-轉讓股數': '1' }]),
+    tpex_insider_transfer: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '6488', '申請人身分': '董事', '預定轉讓方式及股數-轉讓股數': '1' }]),
+    twse_company_capital: jsonBody([{ '出表日期': '1150706', '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '1' }]),
+    tpex_company_capital: jsonBody([{ Date: '1150706', SecuritiesCompanyCode: '6488', 'Paidin.Capital.NTDollars': '1', IssueShares: '1' }]),
     twse_monthly_revenue: jsonBody([{ '資料年月': '11506', '公司代號': '2330', '公司名稱': '台積電', '營業收入-當月營收': '123456789', '營業收入-去年同月增減(%)': '12.3', '營業收入-上月比較增減(%)': '-1.2' }]),
     tpex_monthly_revenue: jsonBody([{ '資料年月': '11506', '公司代號': '6488', '公司名稱': '環球晶', '營業收入-當月營收': '543210', '營業收入-去年同月增減(%)': '4.5', '營業收入-上月比較增減(%)': '2.1' }]),
     tdcc: '資料日期,證券代號,持股分級,人數\n20260704,2330,1,1\n20260704,0050,2,3\n',
@@ -44,6 +50,12 @@ const urls = {
   tpex_mainboard_close: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',
   tpex_3insti: 'https://www.tpex.org.tw/openapi/v1/tpex_3insti_daily_trading',
   tpex_margin: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_margin_balance',
+  twse_insider_holding: 'https://openapi.twse.com.tw/v1/opendata/t187ap11_L',
+  tpex_insider_holding: 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap11_O',
+  twse_insider_transfer: 'https://openapi.twse.com.tw/v1/opendata/t187ap12_L',
+  tpex_insider_transfer: 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap12_O',
+  twse_company_capital: 'https://openapi.twse.com.tw/v1/opendata/t187ap03_L',
+  tpex_company_capital: 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O',
   twse_monthly_revenue: 'https://openapi.twse.com.tw/v1/opendata/t187ap05_L',
   tpex_monthly_revenue: 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O',
   tdcc: 'https://opendata.tdcc.com.tw/getOD.ashx?id=1-5',
@@ -233,7 +245,7 @@ test('single endpoint failure records deterministic lastError and exits zero', a
   });
 });
 
-test('first run writes raw paths and manifest contract with eleven datasets', async () => {
+test('first run writes raw paths and manifest contract with seventeen datasets', async () => {
   await withTempDir(async (root) => {
     const calls = [];
     const bodies = fixtureBodies();
@@ -258,6 +270,12 @@ test('first run writes raw paths and manifest contract with eleven datasets', as
       'tpex_margin',
       'tdcc',
       'twse_bwibbu_all',
+      'twse_insider_transfer',
+      'tpex_insider_transfer',
+      'twse_company_capital',
+      'tpex_company_capital',
+      'twse_insider_holding',
+      'tpex_insider_holding',
       'twse_monthly_revenue',
       'tpex_monthly_revenue',
     ]);

@@ -4,7 +4,7 @@ TW Stock Radar 的每日官方開放資料快照服務。
 
 - 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE/TPEX legacy 與 MOPS 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。
-- `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 8 個日更端點與 2 個月營收端點,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
+- `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 12 個日更端點與 4 個月更端點,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
 
 ## Daily snapshot
 
@@ -18,6 +18,10 @@ TW Stock Radar 的每日官方開放資料快照服務。
 - `tpex_mainboard_close`
 - `tpex_3insti`
 - `tpex_margin`
+- `twse_insider_transfer`
+- `tpex_insider_transfer`
+- `twse_company_capital`
+- `tpex_company_capital`
 
 Raw 路徑固定為:
 
@@ -28,6 +32,19 @@ data/raw/{source_dataset}/{yyyy}/{date}.json
 Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、不過濾。`data/manifest.json` 只在資料或狀態實際變更時改寫;同日 no-op 重跑不得產生 diff。
 
 `twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日。
+
+## Current-only insider and company snapshots
+
+只能從開始抓取日起前向累積的 MOPS OpenAPI 資料集:
+
+- `twse_insider_holding`（月更，`t187ap11_L`）
+- `tpex_insider_holding`（月更，`mopsfin_t187ap11_O`）
+- `twse_insider_transfer`（日更事件流，`t187ap12_L`）
+- `tpex_insider_transfer`（日更事件流，`mopsfin_t187ap12_O`）
+- `twse_company_capital`（日更，`t187ap03_L`）
+- `tpex_company_capital`（日更，`mopsfin_t187ap03_O`）
+
+這六支端點沒有歷史回補與 derived 轉換。月更持股 raw 使用月頻路徑，四支日更 raw 使用一般日頻路徑；上市與上櫃的欄名逐端點獨立驗證，不假設跨市場一致。
 
 ## TWSE/TPEX daily historical backfill
 
