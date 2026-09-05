@@ -244,8 +244,18 @@ async function fetchEndpoint(endpoint, iso, options) {
   return result.bytes;
 }
 
-async function fetchDataEndpointIfMissing(rootDir, endpoint, iso, options) {
-  if (await fileExists(rawPath(rootDir, endpoint.sourceDataset, iso))) return null;
+async function fetchDataEndpointIfMissing(rootDir, endpoint, iso, options, validate) {
+  try {
+    const bytes = await readFile(rawPath(rootDir, endpoint.sourceDataset, iso));
+    try {
+      validate(bytes);
+      return null;
+    } catch {
+      // Invalid cached raw is repaired from the official endpoint below.
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
   return fetchEndpoint(endpoint, iso, options);
 }
 
@@ -334,14 +344,18 @@ export async function runBackfill({
     }
 
     if (twseTrading) {
-      t86Bytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_t86_hist, iso, fetchOptions);
+      t86Bytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_t86_hist, iso, fetchOptions,
+        (bytes) => parseTwseT86Hist(parseJsonBytes(bytes, 'T86')));
       if (t86Bytes) parseTwseT86Hist(parseJsonBytes(t86Bytes, 'T86'));
-      bwibbuBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_bwibbu_hist, iso, fetchOptions);
+      bwibbuBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_bwibbu_hist, iso, fetchOptions,
+        (bytes) => parseTwseBwibbuHist(parseJsonBytes(bytes, 'BWIBBU_d')));
       if (bwibbuBytes) parseTwseBwibbuHist(parseJsonBytes(bwibbuBytes, 'BWIBBU_d'));
-      twseSblBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_sbl_hist, iso, fetchOptions);
+      twseSblBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_sbl_hist, iso, fetchOptions,
+        (bytes) => parseTwseSblHist(parseJsonBytes(bytes, 'TWT93U'), isoToYmd(iso)));
       if (twseSblBytes) parseTwseSblHist(parseJsonBytes(twseSblBytes, 'TWT93U'), isoToYmd(iso));
       if (!twseOpenApiCloseExists) {
-        miMargnBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_mi_margn_hist, iso, fetchOptions);
+        miMargnBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_mi_margn_hist, iso, fetchOptions,
+          (bytes) => parseTwseMiMargnHist(parseJsonBytes(bytes, 'MI_MARGN')));
         if (miMargnBytes) parseTwseMiMargnHist(parseJsonBytes(miMargnBytes, 'MI_MARGN'));
       }
     }
@@ -397,17 +411,21 @@ export async function runBackfill({
         parseTpexDailyQuotesHist(tpexDaily);
         tpexTrading = true;
         tpexSource = 'legacy';
-        tpexInstiBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_insti_hist, iso, fetchOptions);
+        tpexInstiBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_insti_hist, iso, fetchOptions,
+          (bytes) => parseTpexInstiHist(parseJsonBytes(bytes, 'TPEX_INSTI')));
         if (tpexInstiBytes) parseTpexInstiHist(parseJsonBytes(tpexInstiBytes, 'TPEX_INSTI'));
-        tpexMarginBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_margin_hist, iso, fetchOptions);
+        tpexMarginBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_margin_hist, iso, fetchOptions,
+          (bytes) => parseTpexMarginHist(parseJsonBytes(bytes, 'TPEX_MARGIN')));
         if (tpexMarginBytes) parseTpexMarginHist(parseJsonBytes(tpexMarginBytes, 'TPEX_MARGIN'));
       }
     }
 
     if (tpexTrading) {
-      tpexPeBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_pe_hist, iso, fetchOptions);
+      tpexPeBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_pe_hist, iso, fetchOptions,
+        (bytes) => parseTpexPeHist(parseJsonBytes(bytes, 'TPEX_PE')));
       if (tpexPeBytes) parseTpexPeHist(parseJsonBytes(tpexPeBytes, 'TPEX_PE'));
-      tpexSblBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_sbl_hist, iso, fetchOptions);
+      tpexSblBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_sbl_hist, iso, fetchOptions,
+        (bytes) => parseTpexSblHist(parseJsonBytes(bytes, 'TPEX_SBL'), isoToYmd(iso)));
       if (tpexSblBytes) parseTpexSblHist(parseJsonBytes(tpexSblBytes, 'TPEX_SBL'), isoToYmd(iso));
     }
 

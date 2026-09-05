@@ -723,7 +723,7 @@ test('backfill preserves response bytes and a second fixture run is a complete n
   });
 });
 
-test('existing pure-data raw skips fetch and only a deleted dataset is fetched again', async () => {
+test('existing pure-data raw skips fetch while missing and corrupt datasets are fetched again', async (t) => {
   await withTempDir(async (root) => {
     const options = {
       rootDir: root,
@@ -737,15 +737,16 @@ test('existing pure-data raw skips fetch and only a deleted dataset is fetched a
     const before = await fileMap(join(root, 'data'));
 
     const secondCalls = [];
-    await runBackfill({ ...options, fetchImpl: fixtureFetcher({ calls: secondCalls }) });
+    const second = await runBackfill({ ...options, fetchImpl: fixtureFetcher({ calls: secondCalls }) });
     const purePatterns = [
       '/fund/T86?', '/MI_MARGN?', '/BWIBBU_d?',
       '/insti/dailyTrade?', '/margin/balance?', '/afterTrading/peQryDate?',
     ];
-    assert.deepEqual(
-      Object.fromEntries(purePatterns.map((pattern) => [pattern, secondCalls.filter((url) => url.includes(pattern)).length])),
-      Object.fromEntries(purePatterns.map((pattern) => [pattern, 0])),
+    const healthyFetches = Object.fromEntries(
+      purePatterns.map((pattern) => [pattern, secondCalls.filter((url) => url.includes(pattern)).length]),
     );
+    assert.deepEqual(healthyFetches, Object.fromEntries(purePatterns.map((pattern) => [pattern, 0])));
+    assert.equal(second.rawWritten, 0);
     assert.deepEqual(await fileMap(join(root, 'data')), before);
 
     await rm(join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json'));
@@ -755,6 +756,24 @@ test('existing pure-data raw skips fetch and only a deleted dataset is fetched a
       Object.fromEntries(purePatterns.map((pattern) => [pattern, thirdCalls.filter((url) => url.includes(pattern)).length])),
       Object.fromEntries(purePatterns.map((pattern) => [pattern, pattern === '/BWIBBU_d?' ? 1 : 0])),
     );
+
+    const bwibbuPath = join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json');
+    await writeFile(bwibbuPath, Buffer.from('{"stat":"OK","fields":[],'));
+    const fourthCalls = [];
+    const fourth = await runBackfill({ ...options, fetchImpl: fixtureFetcher({ calls: fourthCalls }) });
+    const corruptFetches = fourthCalls.filter((url) => url.includes('/BWIBBU_d?')).length;
+    const otherFetches = purePatterns
+      .filter((pattern) => pattern !== '/BWIBBU_d?')
+      .reduce((total, pattern) => total + fourthCalls.filter((url) => url.includes(pattern)).length, 0);
+    const repaired = (await readFile(bwibbuPath)).equals(jsonBytes(bwibbuFixture()));
+    assert.equal(corruptFetches, 1);
+    assert.equal(otherFetches, 0);
+    assert.equal(repaired, true);
+    assert.equal(fourth.rawWritten, 1);
+    t.diagnostic(`HEALTHY_SIX_FETCHES=${JSON.stringify(healthyFetches)}`);
+    t.diagnostic(`CORRUPT_ENDPOINT_FETCHES=${corruptFetches}`);
+    t.diagnostic(`OTHER_FIVE_FETCHES=${otherFetches}`);
+    t.diagnostic(`REPAIRED_BYTES_EQUAL_OFFICIAL=${repaired}`);
   });
 });
 

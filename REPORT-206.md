@@ -174,3 +174,94 @@ git diff -U0 2f4d033 -- scripts/backfill.mjs | rg '^[+-].*(twseOpenApiCloseExist
 - a1 Scope 檔案仍為 `README.md`、`scripts/endpoints.mjs`、`scripts/backfill.mjs`、`scripts/detect-gaps.mjs`、`tests/backfill.test.mjs`；本輪另覆寫本報告。
 - 既有未追蹤 `REPORT-070.md`、`REPORT-189.md`、`REPORT-192.md`、`REPORT-194.md` 未動。
 - 修正輪 a2 已達 READY_FOR_REVIEW；工作樹依指示保留未 commit。
+
+## a3
+
+### 狀態
+
+- **READY_FOR_REVIEW**。
+- 本輪只修 F-2；沒有處理 F-1，沒有重寫或重構，沒有 commit。
+- 本輪失敗次數：**0**。
+- 真實網路請求總數：**0**；全部驗收均使用注入的 fixture `fetchImpl` 與隔離 tmpdir。
+- 真 `data/` 零寫入；未在 repo 根目錄執行 `build-derived`。
+
+### 逐處改動
+
+1. `scripts/backfill.mjs` 的 `fetchDataEndpointIfMissing`
+   - raw 不存在時維持原行為，直接 fetch。
+   - raw 存在時先讀取 bytes，交由該呼叫點既有 parser 驗證；驗證通過回傳 `null`，因此不發網路請求。
+   - 驗證失敗時才 fetch；官方 body 隨後仍走既有 parser 與 `writeRawBytesOnChange`，可覆寫損壞 raw，且相同內容不增加 `summary.rawWritten`。
+2. `scripts/backfill.mjs` 的八個純資料呼叫點
+   - 分別接回既有 `parseTwseT86Hist`、`parseTwseBwibbuHist`、`parseTwseSblHist`、`parseTwseMiMargnHist`、`parseTpexInstiHist`、`parseTpexMarginHist`、`parseTpexPeHist`、`parseTpexSblHist`。
+   - `twse_mi_index_hist` 與 `tpex_daily_quotes_hist` 兩支承重端點仍直接使用 `fetchEndpoint`，沒有套用 skip helper。
+3. `tests/backfill.test.mjs`
+   - 保留健康 raw 零請求與缺檔重抓案例。
+   - 新增截斷 `twse_bwibbu_hist` raw 的負向對照，精確驗證單端點重抓、其餘五支零請求、官方 bytes 覆寫成功，以及 `rawWritten` 為 1。
+   - 健康檔路徑另精確驗證 `rawWritten` 為 0。
+4. `REPORT-206.md`
+   - 僅追加本 `## a3` 節；a1／a2 內容完整保留。
+
+### 驗收 1：完整測試 — PASS
+
+執行 `node --test tests/`：
+
+```text
+1..93
+# tests 93
+# suites 0
+# pass 93
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3011.660446
+```
+
+總數為 93，等於 a2 的 93；沒有刪測試、skip、放寬 assertion 或吞掉 fetched body 的 parser 錯誤。
+
+### 驗收 2：健康檔案六支純資料端點零請求 — PASS
+
+測試 36 使用注入的 `fetchImpl` 計數；六支健康 raw 全部先通過各自 parser，fetch 次數均為 0，且 `summary.rawWritten === 0`：
+
+```text
+# HEALTHY_SIX_FETCHES={"/fund/T86?":0,"/MI_MARGN?":0,"/BWIBBU_d?":0,"/insti/dailyTrade?":0,"/margin/balance?":0,"/afterTrading/peQryDate?":0}
+```
+
+### 驗收 3：損壞檔自我修復 — PASS
+
+同一測試把既有 `twse/bwibbu_hist` 寫成截斷 JSON，再執行 production `runBackfill`。原始輸出的三個要求值：
+
+```text
+# CORRUPT_ENDPOINT_FETCHES=1
+# OTHER_FIVE_FETCHES=0
+# REPAIRED_BYTES_EQUAL_OFFICIAL=true
+```
+
+另有精確 assertion 驗證 `summary.rawWritten === 1`；因此此負向對照證明損壞檔被官方 fixture body 覆寫，而非只拋錯。
+
+### 驗收 4：承重路徑不變 — PASS
+
+測試 37 `existing bearing raw never bypasses TWSE and TPEX trading-day fetches` 通過；raw 不存在與預先存在兩種狀態的精確 assertion 都是：
+
+```text
+{"trading":1,"twseBearingFetches":1,"tpexBearingFetches":1}
+```
+
+兩支承重端點在兩種狀態都各 fetch 一次，交易日結論相同，與 a2 一致。
+
+### 驗收 5：OpenAPI 資料源判定未修改 — PASS
+
+執行：
+
+```bash
+git diff -U0 2f4d033 -- scripts/backfill.mjs | rg '^[+-].*(twseOpenApiCloseExists|tpexOpenApiCloseExists)'
+```
+
+原始輸出為空（`rg` exit 1，零匹配）；`twseOpenApiCloseExists`／`tpexOpenApiCloseExists` 兩行不在 diff 中。
+
+### 收工檢查
+
+- `git diff --check`：無輸出。
+- a3 工作樹修改範圍只有 `scripts/backfill.mjs`、`tests/backfill.test.mjs`、`REPORT-206.md`。
+- `scripts/lib/derived.mjs`、`scripts/run.mjs`、`scripts/endpoints.mjs`、`scripts/detect-gaps.mjs` 與真 `data/` 均無 a3 修改。
+- 既有未追蹤 `REPORT-070.md`、`REPORT-189.md`、`REPORT-192.md`、`REPORT-194.md` 未動。
