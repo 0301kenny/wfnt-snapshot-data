@@ -1,6 +1,7 @@
 import './date.test.mjs';
 import './cli-flags.test.mjs';
 import './run.test.mjs';
+import './io.test.mjs';
 import './backfill.test.mjs';
 import './gaps.test.mjs';
 import './monthly-backfill.test.mjs';

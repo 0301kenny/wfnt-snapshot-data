@@ -1,5 +1,6 @@
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { basename, dirname, join } from 'node:path';
 
 export async function readJsonIfExists(path, fallback) {
   try {
@@ -10,9 +11,25 @@ export async function readJsonIfExists(path, fallback) {
   }
 }
 
-export async function writeFileEnsured(path, data) {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, data);
+export async function writeFileEnsured(path, data, {
+  writeFileImpl = writeFile,
+  renameImpl = rename,
+  rmImpl = rm,
+} = {}) {
+  const parent = dirname(path);
+  await mkdir(parent, { recursive: true });
+  const temporaryPath = join(parent, `.${basename(path)}.tmp-${process.pid}-${randomUUID()}`);
+  try {
+    await writeFileImpl(temporaryPath, data);
+    await renameImpl(temporaryPath, path);
+  } catch (error) {
+    try {
+      await rmImpl(temporaryPath, { force: true });
+    } catch {
+      // Cleanup is best-effort and must not replace the write or rename error.
+    }
+    throw error;
+  }
 }
 
 export async function listJsonDates(dir) {

@@ -9,6 +9,24 @@ export const DEFAULT_TDCC_WINDOW = 64;
 export const DEFAULT_VALUATION_WINDOW = 1300;
 export const DEFAULT_REVENUE_WINDOW = 36;
 export const DEFAULT_QUARTERLY_WINDOW = 24;
+export const DERIVED_INPUT_DATASETS = new Set([
+  'twse/mi_index',
+  'twse/stock_day_all',
+  'twse/mi_margn',
+  'tpex/index',
+  'tpex/mainboard_close',
+  'tpex/3insti',
+  'tpex/margin',
+  'twse/bwibbu_all',
+  'twse/mi_index_hist',
+  'twse/t86_hist',
+  'twse/mi_margn_hist',
+  'tpex/daily_quotes_hist',
+  'tpex/insti_hist',
+  'tpex/margin_hist',
+  'twse/bwibbu_hist',
+  'tpex/pe_hist',
+]);
 
 const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'];
 const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
