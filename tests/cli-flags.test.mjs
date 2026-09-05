@@ -157,11 +157,48 @@ test('legal numeric strings reach all four run paths unchanged', async () => {
       logger: silentLogger,
     });
 
-    await write(root, '.backfill-progress.json', '{"lastDate":"2026-07-06"}\n');
+    const date = '2026-07-06';
+    const year = date.slice(0, 4);
+    const twseSblFields = [
+      '代號', '名稱', '前日餘額', '賣出', '買進', '現券', '今日餘額', '次一營業日限額',
+      '前日餘額', '當日賣出', '當日還券', '當日調整', '當日餘額', '次一營業日可限額', '備註',
+    ];
+    const tpexSblFields = [
+      '股票代號', '股票名稱', '前日餘額', '賣出', '買進', '現券', '當日餘額', '限額',
+      '前日餘額', '當日賣出', '當日還券', '當日調整數額', '當日餘額',
+      '次一營業日可借券賣出限額', '備註',
+    ];
+    const dailyRaw = [
+      ['twse/stock_day_all', []],
+      ['tpex/mainboard_close', []],
+      ['twse/t86_hist', {
+        stat: 'OK',
+        fields: ['證券代號', '證券名稱', '外陸資買賣超股數(不含外資自營商)', '外資自營商買賣超股數', '投信買賣超股數', '自營商買賣超股數', '三大法人買賣超股數'],
+        data: [],
+      }],
+      ['twse/bwibbu_hist', {
+        stat: 'OK',
+        fields: ['證券代號', '證券名稱', '本益比', '殖利率(%)', '股價淨值比'],
+        data: [],
+      }],
+      ['twse/sbl_hist', { stat: 'OK', date: '20260706', fields: twseSblFields, data: [] }],
+      ['tpex/pe_hist', {
+        stat: 'ok',
+        tables: [{ fields: ['股票代號', '公司名稱', '本益比', '殖利率(%)', '股價淨值比'], data: [] }],
+      }],
+      ['tpex/sbl_hist', {
+        stat: 'ok',
+        date: '20260706',
+        tables: [{ fields: tpexSblFields, data: [] }],
+      }],
+    ];
+    for (const [source, payload] of dailyRaw) {
+      await write(root, `data/raw/${source}/${year}/${date}.json`, `${JSON.stringify(payload)}\n`);
+    }
     const backfillOptions = backfillOptionsFromArgs({
       out: root,
-      from: '2026-07-06',
-      to: '2026-07-06',
+      from: date,
+      to: date,
       'delay-ms': '0',
       window: '500',
     });
@@ -192,7 +229,8 @@ test('legal numeric strings reach all four run paths unchanged', async () => {
     assert.equal(monthly.requests, 0);
     assert.equal(backfillOptions.delayMs, 0);
     assert.equal(backfillOptions.symbolWindow, 500);
-    assert.equal(backfill.resumed, 1);
+    assert.equal(backfill.resumed, 0);
+    assert.equal(backfill.rawWritten, 0);
     assert.equal(gapOptions.delayMs, 0);
     assert.equal(gaps.candidates.size, 0);
     assert.equal(fetchCalls, 0);

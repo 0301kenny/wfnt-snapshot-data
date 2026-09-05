@@ -8,6 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { BACKFILL_ENDPOINTS } from './endpoints.mjs';
 import {
   DEFAULT_SYMBOL_WINDOW,
+  DERIVED_INPUT_DATASETS,
   applyDailyDate,
   isTpexDailyQuotesTradingDay,
   isTwseMiIndexTradingDay,
@@ -232,8 +233,13 @@ async function loadCheckpoint(rootDir) {
   return readJsonIfExists(checkpointPath(rootDir), { lastDate: null });
 }
 
-async function saveCheckpoint(rootDir, iso, now) {
-  const checkpoint = { lastDate: iso, updatedAt: now().toISOString() };
+async function saveCheckpoint(rootDir, iso, fromIso, toIso, now) {
+  const checkpoint = {
+    lastDate: iso,
+    fromDate: fromIso,
+    toDate: toIso,
+    updatedAt: now().toISOString(),
+  };
   await writeFileEnsured(checkpointPath(rootDir), `${JSON.stringify(checkpoint, null, 2)}\n`);
 }
 
@@ -269,6 +275,7 @@ export async function runBackfill({
   maxRetries = 3,
   fetchImpl = globalThis.fetch,
   sleepImpl = sleep,
+  applyDailyDateImpl = applyDailyDate,
   logger = console,
   now = () => new Date(),
 } = {}) {
@@ -295,7 +302,9 @@ export async function runBackfill({
   if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
 
   const checkpoint = explicitDates ? { lastDate: null } : await loadCheckpoint(rootDir);
-  const resumeAfter = checkpoint.lastDate;
+  const resumeAfter = checkpoint.fromDate === fromIso && checkpoint.toDate === toIso
+    ? checkpoint.lastDate
+    : null;
   const summary = {
     trading: 0,
     skipped: 0,
@@ -361,35 +370,26 @@ export async function runBackfill({
     }
 
     const rawWrites = [];
-    if (twseTrading && miIndexBytes) {
+    const pushRawWrite = (sourceDataset, bytes) => {
       rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.twse_mi_index_hist.sourceDataset, iso),
-        miIndexBytes,
-      ));
+        rawPath(rootDir, sourceDataset, iso),
+        bytes,
+      ).then((didWrite) => (didWrite ? sourceDataset : null)));
+    };
+    if (twseTrading && miIndexBytes) {
+      pushRawWrite(BACKFILL_ENDPOINTS.twse_mi_index_hist.sourceDataset, miIndexBytes);
     }
     if (t86Bytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.twse_t86_hist.sourceDataset, iso),
-        t86Bytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.twse_t86_hist.sourceDataset, t86Bytes);
     }
     if (twseTrading && miMargnBytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.twse_mi_margn_hist.sourceDataset, iso),
-        miMargnBytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.twse_mi_margn_hist.sourceDataset, miMargnBytes);
     }
     if (bwibbuBytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.twse_bwibbu_hist.sourceDataset, iso),
-        bwibbuBytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.twse_bwibbu_hist.sourceDataset, bwibbuBytes);
     }
     if (twseSblBytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.twse_sbl_hist.sourceDataset, iso),
-        twseSblBytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.twse_sbl_hist.sourceDataset, twseSblBytes);
     }
 
     const tpexOpenApiCloseExists = await fileExists(rawPath(rootDir, 'tpex/mainboard_close', iso));
@@ -430,46 +430,35 @@ export async function runBackfill({
     }
 
     if (tpexTrading && tpexDailyBytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_daily_quotes_hist.sourceDataset, iso),
-        tpexDailyBytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.tpex_daily_quotes_hist.sourceDataset, tpexDailyBytes);
     }
     if (tpexInstiBytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_insti_hist.sourceDataset, iso),
-        tpexInstiBytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.tpex_insti_hist.sourceDataset, tpexInstiBytes);
     }
     if (tpexMarginBytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_margin_hist.sourceDataset, iso),
-        tpexMarginBytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.tpex_margin_hist.sourceDataset, tpexMarginBytes);
     }
     if (tpexPeBytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_pe_hist.sourceDataset, iso),
-        tpexPeBytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.tpex_pe_hist.sourceDataset, tpexPeBytes);
     }
     if (tpexSblBytes) {
-      rawWrites.push(writeRawBytesOnChange(
-        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_sbl_hist.sourceDataset, iso),
-        tpexSblBytes,
-      ));
+      pushRawWrite(BACKFILL_ENDPOINTS.tpex_sbl_hist.sourceDataset, tpexSblBytes);
     }
-    summary.rawWritten += (await Promise.all(rawWrites)).filter(Boolean).length;
+    const writtenDatasets = (await Promise.all(rawWrites)).filter(Boolean);
+    summary.rawWritten += writtenDatasets.length;
 
     if (!twseTrading && !tpexTrading) {
       summary.skipped += 1;
       logger.log(`[skip] ${iso} non-trading day (twse+tpex)`);
-      if (!explicitDates) await saveCheckpoint(rootDir, iso, now);
+      if (!explicitDates) await saveCheckpoint(rootDir, iso, fromIso, toIso, now);
       continue;
     }
 
-    const written = await applyDailyDate(rootDir, iso, { symbolWindow });
-    if (!explicitDates) await saveCheckpoint(rootDir, iso, now);
+    const derivedInputTouched = writtenDatasets.some((dataset) => DERIVED_INPUT_DATASETS.has(dataset));
+    const written = derivedInputTouched
+      ? await applyDailyDateImpl(rootDir, iso, { symbolWindow })
+      : { symbols: 0, fundamentals: 0, market: false };
+    if (!explicitDates) await saveCheckpoint(rootDir, iso, fromIso, toIso, now);
     summary.trading += 1;
     summary.derivedSymbols += written.symbols;
     logger.log(`[ok] ${iso} twse=${twseSource} tpex=${tpexSource} derivedWritten=${written.symbols}`);

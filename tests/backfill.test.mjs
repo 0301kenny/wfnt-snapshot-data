@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import './io.test.mjs';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -14,6 +15,7 @@ import { BACKFILL_ENDPOINTS, ENDPOINTS } from '../scripts/endpoints.mjs';
 import {
   DEFAULT_SYMBOL_WINDOW,
   DEFAULT_VALUATION_WINDOW,
+  DERIVED_INPUT_DATASETS,
   applyDailyDate,
   isTpexDailyQuotesTradingDay,
   parseTpexPeHist,
@@ -816,7 +818,107 @@ test('existing bearing raw never bypasses TWSE and TPEX trading-day fetches', as
   });
 });
 
-test('checkpoint resumes after interruption without refetching completed dates', async () => {
+test('applyDailyDate runs only when a written raw dataset is one of its 16 inputs', async (t) => {
+  await withTempDir(async (root) => {
+    let applyCalls = 0;
+    const options = {
+      rootDir: root,
+      dates: '2026-07-06',
+      delayMs: 0,
+      fetchImpl: fixtureFetcher(),
+      sleepImpl: async () => {},
+      applyDailyDateImpl: async () => {
+        applyCalls += 1;
+        return { symbols: 0, fundamentals: 0, market: false };
+      },
+      logger: silentLogger,
+      now: () => new Date('2026-07-19T00:00:00Z'),
+    };
+
+    await runBackfill(options);
+    assert.equal(applyCalls, 1);
+
+    applyCalls = 0;
+    const unchanged = await runBackfill(options);
+    assert.equal(unchanged.rawWritten, 0);
+    assert.equal(applyCalls, 0);
+    t.diagnostic(`UNCHANGED_RAW_APPLY_CALLS=${applyCalls}`);
+
+    await rm(join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json'));
+    applyCalls = 0;
+    const derivedInput = await runBackfill(options);
+    assert.equal(derivedInput.rawWritten, 1);
+    assert.equal(applyCalls, 1);
+    t.diagnostic(`DERIVED_INPUT_WRITE_APPLY_CALLS=${applyCalls}`);
+
+    await rm(join(root, 'data/raw/twse/sbl_hist/2026/2026-07-06.json'));
+    await rm(join(root, 'data/raw/tpex/sbl_hist/2026/2026-07-06.json'));
+    applyCalls = 0;
+    const sblOnly = await runBackfill(options);
+    assert.equal(sblOnly.rawWritten, 2);
+    assert.equal(applyCalls, 0);
+    t.diagnostic(`SBL_ONLY_WRITE_APPLY_CALLS=${applyCalls}`);
+  });
+});
+
+test('skipping applyDailyDate on unchanged raw is byte-identical to the base unconditional call', async (t) => {
+  await withTempDir(async (root) => {
+    const optimizedRoot = join(root, 'optimized');
+    const baseRoot = join(root, 'base');
+    const options = (rootDir) => ({
+      rootDir,
+      dates: '2026-07-06',
+      delayMs: 0,
+      fetchImpl: fixtureFetcher(),
+      sleepImpl: async () => {},
+      logger: silentLogger,
+      now: () => new Date('2026-07-19T00:00:00Z'),
+    });
+
+    await runBackfill(options(optimizedRoot));
+    await runBackfill(options(baseRoot));
+    const seededOptimized = await fileMap(join(optimizedRoot, 'data', 'derived'));
+    const seededBase = await fileMap(join(baseRoot, 'data', 'derived'));
+    assert.deepEqual(seededOptimized, seededBase);
+
+    let optimizedApplyCalls = 0;
+    const optimized = await runBackfill({
+      ...options(optimizedRoot),
+      applyDailyDateImpl: async (...args) => {
+        optimizedApplyCalls += 1;
+        return applyDailyDate(...args);
+      },
+    });
+    assert.equal(optimized.rawWritten, 0);
+    assert.equal(optimizedApplyCalls, 0);
+
+    await runBackfill(options(baseRoot));
+    await applyDailyDate(baseRoot, '2026-07-06');
+    const optimizedDerived = await fileMap(join(optimizedRoot, 'data', 'derived'));
+    const baseDerived = await fileMap(join(baseRoot, 'data', 'derived'));
+    assert.deepEqual(optimizedDerived, baseDerived);
+    t.diagnostic(`DERIVED_TREE_BITWISE_EQUAL=${JSON.stringify(Object.keys(baseDerived))} OPTIMIZED_APPLY_CALLS=${optimizedApplyCalls}`);
+  });
+});
+
+test('DERIVED_INPUT_DATASETS exactly matches the namespaces read by applyDailyDate', async (t) => {
+  const source = await readFile(new URL('../scripts/lib/derived.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('export async function applyDailyDate');
+  const end = source.indexOf('\nexport async function applyMonthlyRevenue', start);
+  const applySource = source.slice(start, end);
+  const actual = [...applySource.matchAll(/read(?:Json|Text)Raw\(rootDir, '([^']+)', isoDate\)/g)]
+    .map((match) => match[1]);
+  const registered = [...DERIVED_INPUT_DATASETS];
+  assert.equal(new Set(actual).size, 16);
+  assert.deepEqual([...registered].sort(), [...actual].sort());
+
+  const drifted = registered.filter((dataset) => dataset !== 'twse/mi_index');
+  assert.throws(() => assert.deepEqual([...drifted].sort(), [...actual].sort()));
+  t.diagnostic(`DERIVED_INPUT_DATASETS_MATCH=true COUNT=${actual.length}`);
+  t.diagnostic('NEGATIVE_CONTROL_REMOVE_TWSE_MI_INDEX=ASSERTION_REJECTED');
+});
+
+test('checkpoint resumes after interruption without refetching completed dates', async (t) => {
   await withTempDir(async (root) => {
     const firstCalls = [];
     await assert.rejects(runBackfill({
@@ -833,7 +935,13 @@ test('checkpoint resumes after interruption without refetching completed dates',
       logger: silentLogger,
       now: () => new Date('2026-07-19T00:00:00Z'),
     }), /2026-07-07 tpex\/insti_hist: fixture interruption/);
-    assert.equal((await readJson(root, '.backfill-progress.json')).lastDate, '2026-07-06');
+    const interruptedCheckpoint = await readJson(root, '.backfill-progress.json');
+    assert.deepEqual(interruptedCheckpoint, {
+      lastDate: '2026-07-06',
+      fromDate: '2026-07-06',
+      toDate: '2026-07-07',
+      updatedAt: '2026-07-19T00:00:00.000Z',
+    });
 
     const resumedCalls = [];
     const summary = await runBackfill({
@@ -852,6 +960,8 @@ test('checkpoint resumes after interruption without refetching completed dates',
     assert.equal(resumedCalls.some((url) => url.includes('date=20260706')), false);
     assert.equal(resumedCalls.some((url) => url.includes('date=2026/07/06')), false);
     assert.equal((await readJson(root, '.backfill-progress.json')).lastDate, '2026-07-07');
+    t.diagnostic(`INTERRUPTED_CHECKPOINT=${JSON.stringify(interruptedCheckpoint)}`);
+    t.diagnostic(`RESUME_RESULT=${JSON.stringify({ resumed: summary.resumed, completedDateRefetched: resumedCalls.some((url) => url.includes('20260706') || url.includes('2026/07/06')) })}`);
   });
 });
 
@@ -931,7 +1041,7 @@ test('existing openapi raw still fetches both valuation histories while preservi
   });
 });
 
-test('--dates bypasses a later checkpoint without changing its bytes while range mode resumes', async () => {
+test('old-format later checkpoint does not block an earlier range while --dates still preserves checkpoint bytes', async (t) => {
   await withTempDir(async (root) => {
     const checkpointPath = join(root, '.backfill-progress.json');
     const checkpointBytes = Buffer.from('{"lastDate":"2026-12-31","updatedAt":"frozen"}\n');
@@ -947,9 +1057,18 @@ test('--dates bypasses a later checkpoint without changing its bytes while range
       logger: silentLogger,
       now: () => new Date('2026-08-29T00:00:00Z'),
     });
-    assert.equal(range.resumed, 1);
-    assert.equal(range.rawWritten, 0);
-    assert.equal(rangeCalls.length, 0);
+    assert.equal(range.resumed, 0);
+    assert.ok(range.rawWritten > 0);
+    assert.ok(rangeCalls.length > 0);
+    const rangeCheckpoint = await readJson(root, '.backfill-progress.json');
+    assert.deepEqual(rangeCheckpoint, {
+      lastDate: '2026-07-06',
+      fromDate: '2026-07-06',
+      toDate: '2026-07-06',
+      updatedAt: '2026-08-29T00:00:00.000Z',
+    });
+
+    await writeFile(checkpointPath, checkpointBytes);
 
     const dateCalls = [];
     const explicit = await runBackfill({
@@ -962,9 +1081,12 @@ test('--dates bypasses a later checkpoint without changing its bytes while range
       now: () => new Date('2026-08-29T00:00:00Z'),
     });
     assert.equal(explicit.trading, 1);
-    assert.ok(explicit.rawWritten > 0);
+    assert.equal(explicit.rawWritten, 0);
     assert.ok(dateCalls.length > 0);
     assert.deepEqual(await readFile(checkpointPath), checkpointBytes);
+    t.diagnostic('OLD_FORMAT_CHECKPOINT_LOAD=FULFILLED');
+    t.diagnostic(`OLD_FORMAT_RANGE_RESULT=${JSON.stringify({ resumed: range.resumed, rawWritten: range.rawWritten, fetchCalls: rangeCalls.length, checkpoint: rangeCheckpoint })}`);
+    t.diagnostic(`EXPLICIT_DATES_CHECKPOINT_UNCHANGED=${(await readFile(checkpointPath)).equals(checkpointBytes)}`);
   });
 });
 
