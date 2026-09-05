@@ -249,8 +249,8 @@ function fixtureFetcher({ calls = [], fail, tpexDailyEmpty = false } = {}) {
   };
 }
 
-test('backfill endpoints remain separate from the unchanged daily endpoint list', () => {
-  assert.equal(ENDPOINTS.length, 11);
+test('backfill endpoints remain separate from the 17-entry snapshot endpoint list', () => {
+  assert.equal(ENDPOINTS.length, 17);
   assert.deepEqual(Object.keys(BACKFILL_ENDPOINTS), [
     'twse_monthly_revenue_hist',
     'tpex_monthly_revenue_hist',
