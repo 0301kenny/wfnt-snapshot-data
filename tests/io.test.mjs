@@ -22,12 +22,18 @@ test('writeFileEnsured atomically publishes the exact requested bytes', async (t
   await withTempDir(async (root) => {
     const target = join(root, 'nested', 'snapshot.json');
     const expected = Buffer.from(' {"raw":true}\r\n', 'utf8');
-    await writeFileEnsured(target, expected);
+    let cleanupCalls = 0;
+    await writeFileEnsured(target, expected, {
+      rmImpl: async () => {
+        cleanupCalls += 1;
+      },
+    });
     const actual = await readFile(target);
     const leftovers = await temporaryFiles(join(root, 'nested'));
     assert.deepEqual(actual, expected);
+    assert.equal(cleanupCalls, 0);
     assert.deepEqual(leftovers, []);
-    t.diagnostic(`SUCCESS_BYTES_EQUAL=${actual.equals(expected)} TEMP_FILES=${JSON.stringify(leftovers)}`);
+    t.diagnostic(`SUCCESS_BYTES_EQUAL=${actual.equals(expected)} CLEANUP_CALLS=${cleanupCalls} TEMP_FILES=${JSON.stringify(leftovers)}`);
   });
 });
 
@@ -66,5 +72,32 @@ test('interrupted atomic write leaves an absent target absent and removes its pa
     const leftovers = await temporaryFiles(root);
     assert.deepEqual(leftovers, []);
     t.diagnostic(`ABSENT_TARGET_REMAINS_ABSENT=true TEMP_FILES=${JSON.stringify(leftovers)}`);
+  });
+});
+
+test('cleanup failure never replaces the original write failure', async (t) => {
+  await withTempDir(async (root) => {
+    const target = join(root, 'snapshot.json');
+    const originalError = new Error('ORIGINAL_WRITE_FAILURE');
+    let cleanupCalls = 0;
+    const received = await writeFileEnsured(target, Buffer.from('new bytes\n'), {
+      writeFileImpl: async (path, data) => {
+        await writeFile(path, Buffer.from(data).subarray(0, 4));
+        throw originalError;
+      },
+      rmImpl: async (path, options) => {
+        cleanupCalls += 1;
+        await rm(path, options);
+        throw new Error('CLEANUP_FAILURE');
+      },
+    }).then(
+      () => null,
+      (error) => error,
+    );
+    const leftovers = await temporaryFiles(root);
+    assert.equal(received, originalError);
+    assert.equal(cleanupCalls, 1);
+    assert.deepEqual(leftovers, []);
+    t.diagnostic(`RECEIVED_ERROR=${received.message} CLEANUP_CALLS=${cleanupCalls} TEMP_FILES=${JSON.stringify(leftovers)}`);
   });
 });

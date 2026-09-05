@@ -234,3 +234,312 @@ NEGATIVE_CONTROL_EXIT=1
 - 修改範圍只有：`scripts/lib/io.mjs`、`scripts/lib/derived.mjs`、`scripts/backfill.mjs`、`tests/io.test.mjs`、`tests/backfill.test.mjs`、`tests/cli-flags.test.mjs`、`REPORT-207.md`。
 - 未修改既有未追蹤 `REPORT-070.md`、`REPORT-189.md`、`REPORT-192.md`、`REPORT-194.md`。
 - 真實網路請求：**0**；真 `data/` 寫入：**0**；commit：**0**。
+
+---
+
+# a2 修正輪 — accepted findings F-1～F-4
+
+## 狀態
+
+- **READY_FOR_REVIEW**。
+- a2 base / 目前分支：`f159d2aac8abaf16413e516b7c837a8431832aa4` / `ticket-207`。
+- 未 reset、未 commit、未碰 main；未修改 WFNT_app、`scripts/detect-gaps.mjs` 或本輪三項「不做」。
+- 真實網路請求總次數：**0**。所有 backfill 都使用注入的 fixture fetch；所有寫入與負向對照都在 `mkdtemp` / `/tmp/ticket207-*.XXXXXX` 隔離目錄。未在 repo 根目錄執行 `build-derived`，真 `data/` 零寫入。
+
+## 四筆 finding 的修正與證據
+
+### F-1（P1）零寫入等價性與 SBL 收益同時保留
+
+`scripts/backfill.mjs:457-464` 現在把 skip 條件收窄為：
+
+```js
+const derivedInputTouched = writtenDatasets.some((dataset) => DERIVED_INPUT_DATASETS.has(dataset));
+const canSkipDerived = writtenDatasets.length > 0
+  && !derivedInputTouched
+  && symbolWindow === DEFAULT_SYMBOL_WINDOW
+  && await fileExists(join(rootDir, 'data', 'derived', 'market.json'));
+```
+
+因此：
+
+- 本次 raw **零寫入**：一定 apply，不能再由空陣列的 `.some()` 誤判為可跳過。
+- 任一 16-namespace derived input 寫入：一定 apply。
+- 本次有實際寫入、寫入集合只有 `twse/sbl_hist` / `tpex/sbl_hist`、使用預設 window、且 derived baseline 的 `market.json` 存在：才跳過，保留本票省下約 17.5 秒／日的目標。
+- derived 全缺失或使用非預設 `symbolWindow` 時，即使同次還有 SBL-only 寫入也會 apply；兩個反例的組合邊界同樣被測試覆蓋。
+
+兩個 reviewer 反例已各自成為獨立測試，且 fixture 的初次 run 明確寫入全部 10 筆 legacy raw：
+
+```text
+# MISSING_DERIVED_REBUILT=true SEEDED_RAW_WRITTEN=10 ZERO_WRITE_RERUN_RAW_WRITTEN=0 SBL_RERUN_RAW_WRITTEN=2 APPLY_CALLS=1 FILES=["fundamentals/11/1101.json","fundamentals/12/1240.json","market.json","symbols/23/2330.json","symbols/54/5483.json"]
+# SYMBOL_WINDOW_ROWS_BEFORE=2 ZERO_WRITE_AFTER=1 SBL_AFTER=1 SEEDED_RAW_WRITTEN=10 ZERO_WRITE_RERUN_RAW_WRITTEN=0 SBL_RERUN_RAW_WRITTEN=2 APPLY_CALLS=1
+```
+
+呼叫矩陣與 SBL-only 位元組等價性：
+
+```text
+# ZERO_RAW_WRITES_APPLY_CALLS=1
+# DERIVED_INPUT_WRITE_APPLY_CALLS=1
+# SBL_ONLY_WRITE_APPLY_CALLS=0
+# SBL_ONLY_DERIVED_TREE_BITWISE_EQUAL=["fundamentals/11/1101.json","fundamentals/12/1240.json","market.json","symbols/23/2330.json","symbols/54/5483.json"] RAW_WRITTEN=2 OPTIMIZED_APPLY_CALLS=0
+```
+
+逐位元比較仍使用 `fileMap` 遞迴讀取 `data/derived/` 全樹為原始 `Buffer` map，再以 `assert.deepEqual` 比較完整相對路徑集合及所有 bytes；base 側在相同 SBL-only fixture 後額外執行未修改的 `applyDailyDate`。
+
+### F-2（P2）成功路徑移除無用清理 syscall
+
+`scripts/lib/io.mjs:22-32` 已把清理從 `finally` 移至 `catch`。成功 write + rename 後直接 return，不再呼叫 `rm`。測試以注入的 `rmImpl` 直接計數，不以耗時推估：
+
+```text
+# SUCCESS_BYTES_EQUAL=true CLEANUP_CALLS=0 TEMP_FILES=[]
+```
+
+既有兩條失敗路徑負向測試未刪除、未放寬，仍證明既有目標 bytes 不變、無目標仍不存在、同目錄暫存與零殘留：
+
+```text
+# EXISTING_TARGET_BYTES_UNCHANGED=true TEMP_SAME_DIR=true TEMP_FILES=[]
+# ABSENT_TARGET_REMAINS_ABSENT=true TEMP_FILES=[]
+```
+
+### F-3（P3）清理錯誤不再遮蔽主錯誤
+
+失敗路徑會 best-effort 清理，再無條件重拋原始 write / rename error。測試令 write 拋出 `ORIGINAL_WRITE_FAILURE`，令 cleanup 完成刪除後另拋 `CLEANUP_FAILURE`，呼叫端收到的仍是同一個原始 Error object：
+
+```text
+# RECEIVED_ERROR=ORIGINAL_WRITE_FAILURE CLEANUP_CALLS=1 TEMP_FILES=[]
+```
+
+### F-4（P3）I/O 測試由集中入口顯式登錄
+
+- `tests/all.mjs:4` 現在顯式 `import './io.test.mjs'`。
+- 已移除 `tests/backfill.test.mjs` 對 `io.test.mjs` 的間接 import。
+- a1 為 99 tests；a2 新增 3 tests 後集中入口為 102 tests。隔離副本只移除 `tests/all.mjs` 該 import 時，總數精確降為 98，證明四條 I/O 測試確由集中入口收進 gate：
+
+```text
+1..98
+# tests 98
+# pass 98
+# fail 0
+```
+
+## 每條修正測試的負向對照原始輸出
+
+所有負向對照都在隔離副本執行，production working tree 未被回退。
+
+### F-1a：回退成 a1 的空陣列 `.some()` 條件
+
+回退：`const canSkipDerived = !derivedInputTouched;`（等價於 a1 的空陣列 `.some()` 判斷）。兩個 reviewer 反例同時轉紅：
+
+```text
+not ok 1 - zero raw writes rebuild missing derived outputs
+error: Expected values to be strictly equal:
+0 !== 1
+expected: 1
+actual: 0
+
+not ok 2 - zero raw writes reapplies a changed symbol window
+error: Expected values to be strictly equal:
+0 !== 1
+expected: 1
+actual: 0
+
+1..2
+# tests 2
+# pass 0
+# fail 2
+NEGATIVE_CONTROL_EXIT=1
+```
+
+### F-1b：把最佳化整個拿掉
+
+改成 `const canSkipDerived = false;`，SBL-only 收益測試確實轉紅：
+
+```text
+not ok 1 - applyDailyDate runs for zero raw writes and derived-input writes but skips SBL-only writes
+error: Expected values to be strictly equal:
+1 !== 0
+expected: 0
+actual: 1
+# ZERO_RAW_WRITES_APPLY_CALLS=1
+# DERIVED_INPUT_WRITE_APPLY_CALLS=1
+1..1
+# tests 1
+# pass 0
+# fail 1
+NEGATIVE_CONTROL_EXIT=1
+```
+
+### F-1c：只做 accepted finding 的最小 non-empty 收窄、移除 baseline / window guard
+
+改成 `const canSkipDerived = writtenDatasets.length > 0 && !derivedInputTouched;`。零寫入部分先通過後，兩條測試都在各自的 SBL-only 組合邊界轉紅，證明新增 guard 不是無效 fixture：
+
+```text
+not ok 1 - zero raw writes rebuild missing derived outputs
+error: Expected values to be strictly equal:
+0 !== 1
+expected: 1
+actual: 0
+stack: tests/backfill.test.mjs:906:12
+
+not ok 2 - zero raw writes reapplies a changed symbol window
+error: Expected values to be strictly equal:
+0 !== 1
+expected: 1
+actual: 0
+stack: tests/backfill.test.mjs:960:12
+
+1..2
+# tests 2
+# pass 0
+# fail 2
+NEGATIVE_CONTROL_EXIT=1
+```
+
+### F-2 / F-3：回退成 `finally` 清理
+
+成功路徑計數與原錯誤保留兩條都轉紅；兩條既有中斷／零殘留測試仍綠，證明它們沒有被放寬：
+
+```text
+not ok 1 - writeFileEnsured atomically publishes the exact requested bytes
+error: Expected values to be strictly equal:
+1 !== 0
+expected: 0
+actual: 1
+
+ok 2 - interrupted atomic write preserves an existing target and removes its partial temp file
+# EXISTING_TARGET_BYTES_UNCHANGED=true TEMP_SAME_DIR=true TEMP_FILES=[]
+ok 3 - interrupted atomic write leaves an absent target absent and removes its partial temp file
+# ABSENT_TARGET_REMAINS_ABSENT=true TEMP_FILES=[]
+
+not ok 4 - cleanup failure never replaces the original write failure
+error: Expected "actual" to be reference-equal to "expected":
++ [Error: CLEANUP_FAILURE]
+- [Error: ORIGINAL_WRITE_FAILURE]
+
+1..4
+# tests 4
+# pass 2
+# fail 2
+NEGATIVE_CONTROL_EXIT=1
+```
+
+### F-4：移除集中入口登錄
+
+原始摘要即前述 `98 / 98 / 0`；相對現版 `102 / 102 / 0` 少四條，負向對照成立。
+
+### 驗收 6 的既有 drift 負向對照重跑
+
+隔離副本從 `DERIVED_INPUT_DATASETS` 移除 `twse/mi_index`：
+
+```text
+not ok 1 - DERIVED_INPUT_DATASETS exactly matches the namespaces read by applyDailyDate
+error: Expected values to be strictly deep-equal:
+-   'twse/mi_index',
+1..1
+# tests 1
+# pass 0
+# fail 1
+NEGATIVE_CONTROL_EXIT=1
+```
+
+## a2 新增／修改測試清單與理由
+
+相對 a1 新增 **3** 條：
+
+- `tests/backfill.test.mjs:863`：10 筆 raw 已存在、derived 全缺失、rerun 零 raw 寫入時必須重建。
+- `tests/backfill.test.mjs:912`：10 筆 raw 已存在、`symbolWindow` 從 2 改 1、rerun 零 raw 寫入時必須裁成 1 row。
+- `tests/io.test.mjs:78`：write 與 cleanup 同時 reject 時，原始 write error 必須保持 reference-equal。
+
+修改而未增加條數：
+
+- `tests/backfill.test.mjs:820`：a1 三情境矩陣改為 a2 正確語意（零寫入 1、derived input 寫入 1、SBL-only 寫入 0）。
+- `tests/backfill.test.mjs:966`：a1 的無效「零寫入 skip」等價性 fixture 改成真正會 skip 的 SBL-only fixture；仍逐位元比較 base / optimized 全樹。
+- `tests/io.test.mjs:21`：成功測試新增 `rmImpl` 呼叫計數，直接釘住 F-2。
+- `tests/all.mjs:4` / `tests/backfill.test.mjs:1-3`：I/O 測試改由集中入口顯式登錄，移除間接登錄。
+
+`tests/cli-flags.test.mjs`、a1 的 checkpoint 測試與 16-namespace 測試本輪不需改碼；均已重跑確認仍綠。
+
+## 票面驗收 1～6 重跑
+
+### 1. 完整 gate — PASS
+
+```text
+1..102
+# tests 102
+# suites 0
+# pass 102
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4406.169718
+```
+
+相對原始 base 93 條，TICKET-207 累計新增 9 條；相對 a1 99 條，本輪新增 3 條。沒有刪除、skip 或放寬 assertion。
+
+### 2. 原子寫入正負向 — PASS
+
+```text
+# SUCCESS_BYTES_EQUAL=true CLEANUP_CALLS=0 TEMP_FILES=[]
+# EXISTING_TARGET_BYTES_UNCHANGED=true TEMP_SAME_DIR=true TEMP_FILES=[]
+# ABSENT_TARGET_REMAINS_ABSENT=true TEMP_FILES=[]
+# RECEIVED_ERROR=ORIGINAL_WRITE_FAILURE CLEANUP_CALLS=1 TEMP_FILES=[]
+1..4
+# tests 4
+# pass 4
+# fail 0
+```
+
+### 3. checkpoint 解死結、續跑與舊格式 — PASS
+
+```text
+# INTERRUPTED_CHECKPOINT={"lastDate":"2026-07-06","fromDate":"2026-07-06","toDate":"2026-07-07","updatedAt":"2026-07-19T00:00:00.000Z"}
+# RESUME_RESULT={"resumed":1,"completedDateRefetched":false}
+# OLD_FORMAT_CHECKPOINT_LOAD=FULFILLED
+# OLD_FORMAT_RANGE_RESULT={"resumed":0,"rawWritten":10,"fetchCalls":10,"checkpoint":{"lastDate":"2026-07-06","fromDate":"2026-07-06","toDate":"2026-07-06","updatedAt":"2026-08-29T00:00:00.000Z"}}
+# EXPLICIT_DATES_CHECKPOINT_UNCHANGED=true
+1..2
+# tests 2
+# pass 2
+# fail 0
+```
+
+### 4. apply 呼叫矩陣 — PASS（依 a2 accepted finding 校正零寫入分支）
+
+```text
+# ZERO_RAW_WRITES_APPLY_CALLS=1
+# DERIVED_INPUT_WRITE_APPLY_CALLS=1
+# SBL_ONLY_WRITE_APPLY_CALLS=0
+```
+
+a1 票面把「raw 完整且零寫入」列為 0 的文字已由 F-1 仲裁證明違反等價性；a2 依 accepted finding 將它校正為 1。驗收 4 的實際收益仍由「借券有寫入、其他零寫入」的 0 次呼叫保留。
+
+### 5. derived 等價性 — PASS
+
+在唯一 skip 分支（預設 window、baseline 存在的 SBL-only 寫入）上，optimized 實際 `APPLY_CALLS=0`；同 fixture 的 base 無條件 apply 後，`data/derived/` 全樹路徑與 Buffer bytes 完全相等。零寫入的兩個 reviewer 反例不再 skip；即使它們各自與 SBL-only 寫入同時發生，也會重建缺失 derived 或套用新 window。
+
+### 6. 16-namespace pinning — PASS
+
+```text
+# DERIVED_INPUT_DATASETS_MATCH=true COUNT=16
+# NEGATIVE_CONTROL_REMOVE_TWSE_MI_INDEX=ASSERTION_REJECTED
+1..1
+# tests 1
+# pass 1
+# fail 0
+```
+
+常數仍名為 `DERIVED_INPUT_DATASETS`，位於 `scripts/lib/derived.mjs:12`；`applyDailyDate` 的計算與 16 條讀取未修改。
+
+## 殘留不等價情境判斷
+
+在 production 可達的正常前置狀態中未發現新的不等價：零寫入與 derived-input 寫入都回到 base 的 apply；唯一 skip 是 SBL-only 寫入，測試已證明 derived 全樹與 base 位元組相同。
+
+仍有一個需要明示的外部狀態邊界：若 `market.json` 尚在，但 `data/derived/` 的其他個別檔案已被局部刪除／手動破壞，而同一次執行又恰好只有 SBL raw 寫入，現條件仍會 skip，base 則可能修復該日涉及的檔案。完整 derived 缺失與所有非預設 window 已由新 guard 處理。剩餘邊界判斷可接受的理由是：唯一 skip 分支以「derived input 未變且既有 derived 是正常管線產物」為前置；raw 是 authoritative，外部局部破壞的完整修復出口仍是隔離執行 `build-derived`。若要在 `market.json` 存在時仍對任意局部外部破壞做嚴格證明，就必須增加逐檔完整性狀態標記或每次重算；前者超出本輪四筆 finding，後者會直接消滅驗收 4 的 SBL 收益，因此本輪未自行擴大。
+
+## a2 收工檢查
+
+- `git diff --check`：無輸出。
+- a2 修改檔案只有：`scripts/backfill.mjs`、`scripts/lib/io.mjs`、`tests/backfill.test.mjs`、`tests/io.test.mjs`、`tests/all.mjs`、`REPORT-207.md`；皆在 a2 Scope。
+- `scripts/lib/derived.mjs` 與 `tests/cli-flags.test.mjs` 是 a1 既有內容，本輪未修改；各自驗收仍綠。
+- 四份既有未追蹤歷史報告 `REPORT-070.md`、`REPORT-189.md`、`REPORT-192.md`、`REPORT-194.md` 未修改。
+- 真實網路請求：**0**；真 `data/` 寫入：**0**；commit：**0**。

@@ -1,6 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import './io.test.mjs';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -818,7 +817,7 @@ test('existing bearing raw never bypasses TWSE and TPEX trading-day fetches', as
   });
 });
 
-test('applyDailyDate runs only when a written raw dataset is one of its 16 inputs', async (t) => {
+test('applyDailyDate runs for zero raw writes and derived-input writes but skips SBL-only writes', async (t) => {
   await withTempDir(async (root) => {
     let applyCalls = 0;
     const options = {
@@ -827,9 +826,9 @@ test('applyDailyDate runs only when a written raw dataset is one of its 16 input
       delayMs: 0,
       fetchImpl: fixtureFetcher(),
       sleepImpl: async () => {},
-      applyDailyDateImpl: async () => {
+      applyDailyDateImpl: async (...args) => {
         applyCalls += 1;
-        return { symbols: 0, fundamentals: 0, market: false };
+        return applyDailyDate(...args);
       },
       logger: silentLogger,
       now: () => new Date('2026-07-19T00:00:00Z'),
@@ -841,8 +840,8 @@ test('applyDailyDate runs only when a written raw dataset is one of its 16 input
     applyCalls = 0;
     const unchanged = await runBackfill(options);
     assert.equal(unchanged.rawWritten, 0);
-    assert.equal(applyCalls, 0);
-    t.diagnostic(`UNCHANGED_RAW_APPLY_CALLS=${applyCalls}`);
+    assert.equal(applyCalls, 1);
+    t.diagnostic(`ZERO_RAW_WRITES_APPLY_CALLS=${applyCalls}`);
 
     await rm(join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json'));
     applyCalls = 0;
@@ -861,7 +860,110 @@ test('applyDailyDate runs only when a written raw dataset is one of its 16 input
   });
 });
 
-test('skipping applyDailyDate on unchanged raw is byte-identical to the base unconditional call', async (t) => {
+test('zero raw writes rebuild missing derived outputs', async (t) => {
+  await withTempDir(async (root) => {
+    const options = {
+      rootDir: root,
+      dates: '2026-07-06',
+      delayMs: 0,
+      fetchImpl: fixtureFetcher(),
+      sleepImpl: async () => {},
+      logger: silentLogger,
+      now: () => new Date('2026-07-19T00:00:00Z'),
+    };
+    const seeded = await runBackfill({
+      ...options,
+      applyDailyDateImpl: async () => ({ symbols: 0, fundamentals: 0, market: false }),
+    });
+    assert.equal(seeded.rawWritten, 10);
+    assert.deepEqual(await fileMap(join(root, 'data', 'derived')), {});
+
+    let applyCalls = 0;
+    const repaired = await runBackfill({
+      ...options,
+      applyDailyDateImpl: async (...args) => {
+        applyCalls += 1;
+        return applyDailyDate(...args);
+      },
+    });
+    const derived = await fileMap(join(root, 'data', 'derived'));
+    assert.equal(repaired.rawWritten, 0);
+    assert.equal(applyCalls, 1);
+    assert.ok(Object.keys(derived).length > 0);
+
+    await rm(join(root, 'data', 'derived'), { recursive: true });
+    await rm(join(root, 'data/raw/twse/sbl_hist/2026/2026-07-06.json'));
+    await rm(join(root, 'data/raw/tpex/sbl_hist/2026/2026-07-06.json'));
+    applyCalls = 0;
+    const sblAndMissingDerived = await runBackfill({
+      ...options,
+      applyDailyDateImpl: async (...args) => {
+        applyCalls += 1;
+        return applyDailyDate(...args);
+      },
+    });
+    assert.equal(sblAndMissingDerived.rawWritten, 2);
+    assert.equal(applyCalls, 1);
+    assert.ok(Object.keys(await fileMap(join(root, 'data', 'derived'))).length > 0);
+    t.diagnostic(`MISSING_DERIVED_REBUILT=true SEEDED_RAW_WRITTEN=${seeded.rawWritten} ZERO_WRITE_RERUN_RAW_WRITTEN=${repaired.rawWritten} SBL_RERUN_RAW_WRITTEN=${sblAndMissingDerived.rawWritten} APPLY_CALLS=${applyCalls} FILES=${JSON.stringify(Object.keys(derived))}`);
+  });
+});
+
+test('zero raw writes reapplies a changed symbol window', async (t) => {
+  await withTempDir(async (root) => {
+    const options = {
+      rootDir: root,
+      dates: '2026-07-06',
+      delayMs: 0,
+      fetchImpl: fixtureFetcher(),
+      sleepImpl: async () => {},
+      logger: silentLogger,
+      now: () => new Date('2026-07-19T00:00:00Z'),
+    };
+    const initial = await runBackfill({ ...options, symbolWindow: 2 });
+    assert.equal(initial.rawWritten, 10);
+    const symbolPath = 'symbols/23/2330.json';
+    const seeded = await readJson(root, `data/derived/${symbolPath}`);
+    const olderRow = [20260703, ...seeded.rows[0].slice(1)];
+    await writeDerived(root, symbolPath, { ...seeded, rows: [olderRow, seeded.rows[0]] });
+    assert.equal((await readJson(root, `data/derived/${symbolPath}`)).rows.length, 2);
+
+    let applyCalls = 0;
+    const resized = await runBackfill({
+      ...options,
+      symbolWindow: 1,
+      applyDailyDateImpl: async (...args) => {
+        applyCalls += 1;
+        return applyDailyDate(...args);
+      },
+    });
+    const rows = (await readJson(root, `data/derived/${symbolPath}`)).rows;
+    assert.equal(resized.rawWritten, 0);
+    assert.equal(applyCalls, 1);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0][0], 20260706);
+
+    await writeDerived(root, symbolPath, { ...seeded, rows: [olderRow, seeded.rows[0]] });
+    await rm(join(root, 'data/raw/twse/sbl_hist/2026/2026-07-06.json'));
+    await rm(join(root, 'data/raw/tpex/sbl_hist/2026/2026-07-06.json'));
+    applyCalls = 0;
+    const sblAndResized = await runBackfill({
+      ...options,
+      symbolWindow: 1,
+      applyDailyDateImpl: async (...args) => {
+        applyCalls += 1;
+        return applyDailyDate(...args);
+      },
+    });
+    const sblRows = (await readJson(root, `data/derived/${symbolPath}`)).rows;
+    assert.equal(sblAndResized.rawWritten, 2);
+    assert.equal(applyCalls, 1);
+    assert.equal(sblRows.length, 1);
+    t.diagnostic(`SYMBOL_WINDOW_ROWS_BEFORE=2 ZERO_WRITE_AFTER=${rows.length} SBL_AFTER=${sblRows.length} SEEDED_RAW_WRITTEN=${initial.rawWritten} ZERO_WRITE_RERUN_RAW_WRITTEN=${resized.rawWritten} SBL_RERUN_RAW_WRITTEN=${sblAndResized.rawWritten} APPLY_CALLS=${applyCalls}`);
+  });
+});
+
+test('skipping applyDailyDate for SBL-only writes is byte-identical to the base unconditional call', async (t) => {
   await withTempDir(async (root) => {
     const optimizedRoot = join(root, 'optimized');
     const baseRoot = join(root, 'base');
@@ -881,6 +983,11 @@ test('skipping applyDailyDate on unchanged raw is byte-identical to the base unc
     const seededBase = await fileMap(join(baseRoot, 'data', 'derived'));
     assert.deepEqual(seededOptimized, seededBase);
 
+    for (const candidateRoot of [optimizedRoot, baseRoot]) {
+      await rm(join(candidateRoot, 'data/raw/twse/sbl_hist/2026/2026-07-06.json'));
+      await rm(join(candidateRoot, 'data/raw/tpex/sbl_hist/2026/2026-07-06.json'));
+    }
+
     let optimizedApplyCalls = 0;
     const optimized = await runBackfill({
       ...options(optimizedRoot),
@@ -889,7 +996,7 @@ test('skipping applyDailyDate on unchanged raw is byte-identical to the base unc
         return applyDailyDate(...args);
       },
     });
-    assert.equal(optimized.rawWritten, 0);
+    assert.equal(optimized.rawWritten, 2);
     assert.equal(optimizedApplyCalls, 0);
 
     await runBackfill(options(baseRoot));
@@ -897,7 +1004,7 @@ test('skipping applyDailyDate on unchanged raw is byte-identical to the base unc
     const optimizedDerived = await fileMap(join(optimizedRoot, 'data', 'derived'));
     const baseDerived = await fileMap(join(baseRoot, 'data', 'derived'));
     assert.deepEqual(optimizedDerived, baseDerived);
-    t.diagnostic(`DERIVED_TREE_BITWISE_EQUAL=${JSON.stringify(Object.keys(baseDerived))} OPTIMIZED_APPLY_CALLS=${optimizedApplyCalls}`);
+    t.diagnostic(`SBL_ONLY_DERIVED_TREE_BITWISE_EQUAL=${JSON.stringify(Object.keys(baseDerived))} RAW_WRITTEN=${optimized.rawWritten} OPTIMIZED_APPLY_CALLS=${optimizedApplyCalls}`);
   });
 });
 

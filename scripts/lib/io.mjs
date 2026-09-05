@@ -14,6 +14,7 @@ export async function readJsonIfExists(path, fallback) {
 export async function writeFileEnsured(path, data, {
   writeFileImpl = writeFile,
   renameImpl = rename,
+  rmImpl = rm,
 } = {}) {
   const parent = dirname(path);
   await mkdir(parent, { recursive: true });
@@ -21,8 +22,13 @@ export async function writeFileEnsured(path, data, {
   try {
     await writeFileImpl(temporaryPath, data);
     await renameImpl(temporaryPath, path);
-  } finally {
-    await rm(temporaryPath, { force: true });
+  } catch (error) {
+    try {
+      await rmImpl(temporaryPath, { force: true });
+    } catch {
+      // Cleanup is best-effort and must not replace the write or rename error.
+    }
+    throw error;
   }
 }
 

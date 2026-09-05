@@ -455,9 +455,13 @@ export async function runBackfill({
     }
 
     const derivedInputTouched = writtenDatasets.some((dataset) => DERIVED_INPUT_DATASETS.has(dataset));
-    const written = derivedInputTouched
-      ? await applyDailyDateImpl(rootDir, iso, { symbolWindow })
-      : { symbols: 0, fundamentals: 0, market: false };
+    const canSkipDerived = writtenDatasets.length > 0
+      && !derivedInputTouched
+      && symbolWindow === DEFAULT_SYMBOL_WINDOW
+      && await fileExists(join(rootDir, 'data', 'derived', 'market.json'));
+    const written = canSkipDerived
+      ? { symbols: 0, fundamentals: 0, market: false }
+      : await applyDailyDateImpl(rootDir, iso, { symbolWindow });
     if (!explicitDates) await saveCheckpoint(rootDir, iso, fromIso, toIso, now);
     summary.trading += 1;
     summary.derivedSymbols += written.symbols;
