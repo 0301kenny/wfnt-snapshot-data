@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { backfillOptionsFromArgs, runBackfill } from '../scripts/backfill.mjs';
+import {
+  backfillOptionsFromArgs,
+  parseTpexSblHist,
+  parseTwseSblHist,
+  runBackfill,
+} from '../scripts/backfill.mjs';
 import { buildDerived } from '../scripts/build-derived.mjs';
 import { BACKFILL_ENDPOINTS, ENDPOINTS } from '../scripts/endpoints.mjs';
 import {
@@ -123,6 +128,22 @@ function bwibbuFixture({ empty = false } = {}) {
   };
 }
 
+function twseSblFixture({ balance = '7,654', date = '20260706' } = {}) {
+  return {
+    stat: 'OK',
+    date,
+    title: '信用額度總量管制餘額表',
+    fields: [
+      '代號', '名稱', '前日餘額', '賣出', '買進', '現券', '今日餘額', '次一營業日限額',
+      '前日餘額', '當日賣出', '當日還券', '當日調整', '當日餘額', '次一營業日可限額', '備註',
+    ],
+    data: [[
+      '2330', '台積電', '111', '2', '3', '4', '106', '1,000',
+      '8,000', '100', '400', '-46', balance, '2,000', '',
+    ]],
+  };
+}
+
 // Cropped from official peQryDate responses captured by smoke A/B.
 function tpexPeFixture({ year = 2026, empty = false } = {}) {
   const current = year === 2026;
@@ -213,6 +234,26 @@ function tpexMarginFixture({ invalid = false } = {}) {
   };
 }
 
+function tpexSblFixture({ balance = '3,210', marginBalance = '8,765', date = '20260706' } = {}) {
+  return {
+    stat: 'ok',
+    date,
+    tables: [{
+      title: '上櫃借券賣出餘額',
+      date: '115/07/06',
+      fields: [
+        '股票代號', '股票名稱', '前日餘額', '賣出', '買進', '現券', '當日餘額', '限額',
+        '前日餘額', '當日賣出', '當日還券', '當日調整數額', '當日餘額',
+        '次一營業日可借券賣出限額', '備註',
+      ],
+      data: [[
+        '5483', '中美晶', '9,000', '500', '250', '10', marginBalance, '20,000',
+        '3,000', '500', '250', '-40', balance, '10,000', '',
+      ]],
+    }],
+  };
+}
+
 function responseFor(bytes, status = 200) {
   return {
     status,
@@ -241,10 +282,18 @@ function fixtureFetcher({ calls = [], fail, tpexDailyEmpty = false } = {}) {
     if (url.includes('/fund/T86?')) return responseFor(bodies.T86);
     if (url.includes('/MI_MARGN?')) return responseFor(bodies.MI_MARGN);
     if (url.includes('/BWIBBU_d?')) return responseFor(bodies.BWIBBU);
+    if (url.includes('/TWT93U?')) {
+      const date = new URL(url).searchParams.get('date');
+      return responseFor(jsonBytes(twseSblFixture({ date })));
+    }
     if (url.includes('/afterTrading/dailyQuotes?')) return responseFor(bodies.TPEX_DAILY_QUOTES);
     if (url.includes('/insti/dailyTrade?')) return responseFor(bodies.TPEX_INSTI);
     if (url.includes('/margin/balance?')) return responseFor(bodies.TPEX_MARGIN);
     if (url.includes('/afterTrading/peQryDate?')) return responseFor(bodies.TPEX_PE);
+    if (url.includes('/margin/sbl?')) {
+      const date = new URL(url).searchParams.get('date').replaceAll('/', '');
+      return responseFor(jsonBytes(tpexSblFixture({ date })));
+    }
     throw new Error(`unexpected URL: ${url}`);
   };
 }
@@ -260,10 +309,12 @@ test('backfill endpoints remain separate from the 17-entry snapshot endpoint lis
     'twse_t86_hist',
     'twse_mi_margn_hist',
     'twse_bwibbu_hist',
+    'twse_sbl_hist',
     'tpex_daily_quotes_hist',
     'tpex_insti_hist',
     'tpex_margin_hist',
     'tpex_pe_hist',
+    'tpex_sbl_hist',
   ]);
   assert.equal(BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.sourceDataset, 'twse/monthly_revenue_hist');
   assert.equal(BACKFILL_ENDPOINTS.tpex_monthly_revenue_hist.sourceDataset, 'tpex/monthly_revenue_hist');
@@ -288,10 +339,41 @@ test('backfill endpoints remain separate from the 17-entry snapshot endpoint lis
     'https://mopsov.twse.com.tw/nas/t21/otc/t21sc03_110_8_0.html',
   );
   assert.match(BACKFILL_ENDPOINTS.twse_bwibbu_hist.url('20260717'), /BWIBBU_d\?date=20260717&selectType=ALL/);
+  assert.match(BACKFILL_ENDPOINTS.twse_sbl_hist.url('20260717'), /TWT93U\?date=20260717&selectType=SLBNLB/);
   assert.match(BACKFILL_ENDPOINTS.tpex_daily_quotes_hist.url('20260717'), /date=2026\/07\/17&type=EW/);
   assert.match(BACKFILL_ENDPOINTS.tpex_insti_hist.url('20260717'), /sect=EW&date=2026\/07\/17/);
   assert.match(BACKFILL_ENDPOINTS.tpex_margin_hist.url('20260717'), /date=2026\/07\/17/);
   assert.match(BACKFILL_ENDPOINTS.tpex_pe_hist.url('20260717'), /peQryDate\?date=2026\/07\/17/);
+  assert.match(BACKFILL_ENDPOINTS.tpex_sbl_hist.url('20260717'), /margin\/sbl\?date=2026\/07\/17/);
+});
+
+test('securities lending parsers select the borrowing balance and reject response-date drift', () => {
+  assert.deepEqual(parseTwseSblHist(twseSblFixture(), '20260706'), [{
+    SecuritiesCompanyCode: '2330',
+    CompanyName: '台積電',
+    SecuritiesBorrowingBalanceOfTheMarketDay: '7,654',
+  }]);
+  const wrongRepeatedBalance = twseSblFixture();
+  wrongRepeatedBalance.data[0][2] = '999,999';
+  assert.equal(
+    parseTwseSblHist(wrongRepeatedBalance, '20260706')[0].SecuritiesBorrowingBalanceOfTheMarketDay,
+    '7,654',
+  );
+  assert.deepEqual(parseTpexSblHist(tpexSblFixture(), '20260706'), [{
+    SecuritiesCompanyCode: '5483',
+    CompanyName: '中美晶',
+    SecuritiesBorrowingBalanceOfTheMarketDay: '3,210',
+  }]);
+  const differentTpexBalances = tpexSblFixture({
+    marginBalance: 'INDEX_6_MARGIN_BALANCE',
+    balance: 'INDEX_12_SBL_BALANCE',
+  });
+  assert.equal(
+    parseTpexSblHist(differentTpexBalances, '20260706')[0].SecuritiesBorrowingBalanceOfTheMarketDay,
+    'INDEX_12_SBL_BALANCE',
+  );
+  assert.throws(() => parseTwseSblHist(twseSblFixture(), '20260707'), /does not match 20260707/);
+  assert.throws(() => parseTpexSblHist(tpexSblFixture(), '20260707'), /does not match 20260707/);
 });
 
 test('valuation legacy parsers preserve the five-field contract across TWSE and both TPEX schemas', () => {
@@ -623,6 +705,14 @@ test('backfill preserves response bytes and a second fixture run is a complete n
       await readFile(join(root, 'data/raw/tpex/pe_hist/2026/2026-07-06.json')),
       jsonBytes(tpexPeFixture()),
     );
+    assert.deepEqual(
+      await readFile(join(root, 'data/raw/twse/sbl_hist/2026/2026-07-06.json')),
+      jsonBytes(twseSblFixture()),
+    );
+    assert.deepEqual(
+      await readFile(join(root, 'data/raw/tpex/sbl_hist/2026/2026-07-06.json')),
+      jsonBytes(tpexSblFixture()),
+    );
     assert.ok(calls.some((url) => url.includes('date=2026/07/06')));
     const before = await fileMap(join(root, 'data'));
     const callCount = calls.length;
@@ -630,6 +720,99 @@ test('backfill preserves response bytes and a second fixture run is a complete n
     assert.equal(second.resumed, 1);
     assert.equal(calls.length, callCount);
     assert.deepEqual(await fileMap(join(root, 'data')), before);
+  });
+});
+
+test('existing pure-data raw skips fetch while missing and corrupt datasets are fetched again', async (t) => {
+  await withTempDir(async (root) => {
+    const options = {
+      rootDir: root,
+      dates: '2026-07-06',
+      delayMs: 0,
+      sleepImpl: async () => {},
+      logger: silentLogger,
+      now: () => new Date('2026-07-19T00:00:00Z'),
+    };
+    await runBackfill({ ...options, fetchImpl: fixtureFetcher() });
+    const before = await fileMap(join(root, 'data'));
+
+    const secondCalls = [];
+    const second = await runBackfill({ ...options, fetchImpl: fixtureFetcher({ calls: secondCalls }) });
+    const purePatterns = [
+      '/fund/T86?', '/MI_MARGN?', '/BWIBBU_d?',
+      '/insti/dailyTrade?', '/margin/balance?', '/afterTrading/peQryDate?',
+    ];
+    const healthyFetches = Object.fromEntries(
+      purePatterns.map((pattern) => [pattern, secondCalls.filter((url) => url.includes(pattern)).length]),
+    );
+    assert.deepEqual(healthyFetches, Object.fromEntries(purePatterns.map((pattern) => [pattern, 0])));
+    assert.equal(second.rawWritten, 0);
+    assert.deepEqual(await fileMap(join(root, 'data')), before);
+
+    await rm(join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json'));
+    const thirdCalls = [];
+    await runBackfill({ ...options, fetchImpl: fixtureFetcher({ calls: thirdCalls }) });
+    assert.deepEqual(
+      Object.fromEntries(purePatterns.map((pattern) => [pattern, thirdCalls.filter((url) => url.includes(pattern)).length])),
+      Object.fromEntries(purePatterns.map((pattern) => [pattern, pattern === '/BWIBBU_d?' ? 1 : 0])),
+    );
+
+    const bwibbuPath = join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json');
+    await writeFile(bwibbuPath, Buffer.from('{"stat":"OK","fields":[],'));
+    const fourthCalls = [];
+    const fourth = await runBackfill({ ...options, fetchImpl: fixtureFetcher({ calls: fourthCalls }) });
+    const corruptFetches = fourthCalls.filter((url) => url.includes('/BWIBBU_d?')).length;
+    const otherFetches = purePatterns
+      .filter((pattern) => pattern !== '/BWIBBU_d?')
+      .reduce((total, pattern) => total + fourthCalls.filter((url) => url.includes(pattern)).length, 0);
+    const repaired = (await readFile(bwibbuPath)).equals(jsonBytes(bwibbuFixture()));
+    assert.equal(corruptFetches, 1);
+    assert.equal(otherFetches, 0);
+    assert.equal(repaired, true);
+    assert.equal(fourth.rawWritten, 1);
+    t.diagnostic(`HEALTHY_SIX_FETCHES=${JSON.stringify(healthyFetches)}`);
+    t.diagnostic(`CORRUPT_ENDPOINT_FETCHES=${corruptFetches}`);
+    t.diagnostic(`OTHER_FIVE_FETCHES=${otherFetches}`);
+    t.diagnostic(`REPAIRED_BYTES_EQUAL_OFFICIAL=${repaired}`);
+  });
+});
+
+test('existing bearing raw never bypasses TWSE and TPEX trading-day fetches', async () => {
+  async function runState(preseedBearingRaw) {
+    let result;
+    await withTempDir(async (root) => {
+      if (preseedBearingRaw) {
+        await writeRaw(root, 'twse/mi_index_hist', '2026-07-06', Buffer.from('{"stale":true}\n'));
+        await writeRaw(root, 'tpex/daily_quotes_hist', '2026-07-06', Buffer.from('{"stale":true}\n'));
+      }
+      const calls = [];
+      const summary = await runBackfill({
+        rootDir: root,
+        dates: '2026-07-06',
+        delayMs: 0,
+        fetchImpl: fixtureFetcher({ calls }),
+        sleepImpl: async () => {},
+        logger: silentLogger,
+        now: () => new Date('2026-07-19T00:00:00Z'),
+      });
+      result = {
+        trading: summary.trading,
+        twseBearingFetches: calls.filter((url) => url.includes('/MI_INDEX?')).length,
+        tpexBearingFetches: calls.filter((url) => url.includes('/afterTrading/dailyQuotes?')).length,
+      };
+    });
+    return result;
+  }
+
+  assert.deepEqual(await runState(false), {
+    trading: 1,
+    twseBearingFetches: 1,
+    tpexBearingFetches: 1,
+  });
+  assert.deepEqual(await runState(true), {
+    trading: 1,
+    twseBearingFetches: 1,
+    tpexBearingFetches: 1,
   });
 });
 
@@ -712,7 +895,9 @@ test('existing openapi raw still fetches both valuation histories while preservi
     const bodies = {
       T86: jsonBytes(t86Fixture()),
       BWIBBU: jsonBytes(bwibbuFixture()),
+      TWSE_SBL: jsonBytes(twseSblFixture()),
       TPEX_PE: jsonBytes(tpexPeFixture()),
+      TPEX_SBL: jsonBytes(tpexSblFixture()),
     };
     const summary = await runBackfill({
       rootDir: root,
@@ -723,7 +908,9 @@ test('existing openapi raw still fetches both valuation histories while preservi
         calls.push(url);
         if (url.includes('/fund/T86?')) return responseFor(bodies.T86);
         if (url.includes('/BWIBBU_d?')) return responseFor(bodies.BWIBBU);
+        if (url.includes('/TWT93U?')) return responseFor(bodies.TWSE_SBL);
         if (url.includes('/afterTrading/peQryDate?')) return responseFor(bodies.TPEX_PE);
+        if (url.includes('/margin/sbl?')) return responseFor(bodies.TPEX_SBL);
         throw new Error(`unexpected URL: ${url}`);
       },
       sleepImpl: async () => {},
@@ -732,11 +919,13 @@ test('existing openapi raw still fetches both valuation histories while preservi
     });
     assert.equal(summary.openApiDays, 1);
     assert.equal(summary.tpexOpenApiDays, 1);
-    assert.equal(calls.length, 3);
-    assert.equal(calls.filter((url) => url.includes('www.tpex.org.tw')).length, 1);
+    assert.equal(calls.length, 5);
+    assert.equal(calls.filter((url) => url.includes('www.tpex.org.tw')).length, 2);
     assert.deepEqual(await readFile(join(root, 'data/raw/twse/t86_hist/2026/2026-07-06.json')), bodies.T86);
     assert.deepEqual(await readFile(join(root, 'data/raw/twse/bwibbu_hist/2026/2026-07-06.json')), bodies.BWIBBU);
     assert.deepEqual(await readFile(join(root, 'data/raw/tpex/pe_hist/2026/2026-07-06.json')), bodies.TPEX_PE);
+    assert.deepEqual(await readFile(join(root, 'data/raw/twse/sbl_hist/2026/2026-07-06.json')), bodies.TWSE_SBL);
+    assert.deepEqual(await readFile(join(root, 'data/raw/tpex/sbl_hist/2026/2026-07-06.json')), bodies.TPEX_SBL);
     const symbol = await readJson(root, 'data/derived/symbols/23/2330.json');
     assert.deepEqual(symbol.rows[0], [20260706, 10, 11, 9, 10.5, 100, 20, 30, 40, 9999, 1200, 400, 300]);
   });
