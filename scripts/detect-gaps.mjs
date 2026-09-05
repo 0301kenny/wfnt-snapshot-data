@@ -17,6 +17,7 @@ export const COVERAGE_SOURCES = {
     'twse/t86_hist',
     'twse/mi_margn_hist',
     'twse/bwibbu_hist',
+    'twse/sbl_hist',
     'twse/stock_day_all',
   ],
   tpex: [
@@ -24,6 +25,7 @@ export const COVERAGE_SOURCES = {
     'tpex/insti_hist',
     'tpex/margin_hist',
     'tpex/pe_hist',
+    'tpex/sbl_hist',
     'tpex/mainboard_close',
   ],
 };

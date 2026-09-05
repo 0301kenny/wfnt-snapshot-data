@@ -48,22 +48,24 @@ Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、�
 
 ## TWSE/TPEX daily historical backfill
 
-`scripts/backfill.mjs` 只供授權的歷史回補批次使用,不參與 `scripts/run.mjs` 日更流程。它依日抓取官方 TWSE legacy `MI_INDEX`、`T86`、`MI_MARGN`、`BWIBBU_d` 與 TPEX legacy `dailyQuotes`、`dailyTrade`、`balance`、`peQryDate`,把 response body 原樣 bytes 寫入:
+`scripts/backfill.mjs` 只供授權的歷史回補批次使用,不參與 `scripts/run.mjs` 日更流程。它依日抓取官方 TWSE legacy `MI_INDEX`、`T86`、`MI_MARGN`、`BWIBBU_d`、`TWT93U` 與 TPEX legacy `dailyQuotes`、`dailyTrade`、`balance`、`peQryDate`、`margin/sbl`,把 response body 原樣 bytes 寫入:
 
 ```text
 data/raw/twse/mi_index_hist/{yyyy}/{date}.json
 data/raw/twse/t86_hist/{yyyy}/{date}.json
 data/raw/twse/mi_margn_hist/{yyyy}/{date}.json
 data/raw/twse/bwibbu_hist/{yyyy}/{date}.json
+data/raw/twse/sbl_hist/{yyyy}/{date}.json
 data/raw/tpex/daily_quotes_hist/{yyyy}/{date}.json
 data/raw/tpex/insti_hist/{yyyy}/{date}.json
 data/raw/tpex/margin_hist/{yyyy}/{date}.json
 data/raw/tpex/pe_hist/{yyyy}/{date}.json
+data/raw/tpex/sbl_hist/{yyyy}/{date}.json
 ```
 
-TWSE 與 TPEX 各自獨立判斷交易日與 openapi 是否存在。當日已有 `twse/stock_day_all` raw 時,MI_INDEX 與 MI_MARGN 不重複抓取,T86 仍會抓取以補 TWSE 法人欄位,BWIBBU_d 也一律抓取以補估值歷史;已有 `tpex/mainboard_close` raw 時則跳過 dailyQuotes、dailyTrade、balance 三個 TPEX legacy 端點,但 peQryDate 仍一律抓取。Derived 優先使用已有 openapi,只在對應 openapi 缺席時以 hist 補位,並共用日更的單一轉換路徑。範圍回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
+TWSE 與 TPEX 各自獨立判斷交易日與 openapi 是否存在。當日已有 `twse/stock_day_all` raw 時,MI_INDEX 與 MI_MARGN 不重複抓取;已有 `tpex/mainboard_close` raw 時則跳過 dailyQuotes、dailyTrade、balance 三個 TPEX legacy 端點。承重的 MI_INDEX 與 dailyQuotes 在需要判斷交易日時仍會 fetch；其他純資料端點若目標 raw 已存在,會在 fetch 前略過。Derived 優先使用已有 openapi,只在對應 openapi 缺席時以 hist 補位,並共用日更的單一轉換路徑；借券 raw 本票不接 derived。範圍回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
 
-所有 backfill-only 來源都在 `scripts/endpoints.mjs` 的 `BACKFILL_ENDPOINTS` 宣告 cadence；8 個 legacy JSON 來源為 `daily`、兩個月營收來源為 `monthly`、兩個季度財報來源為 `quarterly`。缺口覆蓋只取 `daily` 項目再加上各市場 close source。
+所有 backfill-only 來源都在 `scripts/endpoints.mjs` 的 `BACKFILL_ENDPOINTS` 宣告 cadence；10 個 legacy JSON 來源為 `daily`、兩個月營收來源為 `monthly`、兩個季度財報來源為 `quarterly`。缺口覆蓋只取 `daily` 項目再加上各市場 close source。
 
 手動用法(預設寫本 repo `data/`;`--out` 可指向 scratch root):
 
@@ -72,7 +74,7 @@ node scripts/backfill.mjs --from 2021-07-01 --to 2026-06-30
 node scripts/backfill.mjs --from 2021-07-01 --to 2021-07-31 --out ./.backfill-out
 ```
 
-`scripts/detect-gaps.mjs` 依市場分開計算已覆蓋日期。TWSE 覆蓋是 `mi_index_hist`、`t86_hist`、`mi_margn_hist`、`bwibbu_hist` 與 `stock_day_all` 的聯集;TPEX 覆蓋是 `daily_quotes_hist`、`insti_hist`、`margin_hist`、`pe_hist` 與 `mainboard_close` 的聯集。它會掃描工作日,再以官方 TWSE `MI_INDEX` 判定候選日是否為交易日;預設範圍是兩市場已覆蓋的最小日到最大日,`--from` / `--to` 可覆寫,`--delay-ms` 預設 3000。
+`scripts/detect-gaps.mjs` 依市場分開計算已覆蓋日期。TWSE 覆蓋是 `mi_index_hist`、`t86_hist`、`mi_margn_hist`、`bwibbu_hist`、`sbl_hist` 與 `stock_day_all` 的聯集;TPEX 覆蓋是 `daily_quotes_hist`、`insti_hist`、`margin_hist`、`pe_hist`、`sbl_hist` 與 `mainboard_close` 的聯集。它會掃描工作日,再以官方 TWSE `MI_INDEX` 判定候選日是否為交易日;預設範圍是兩市場已覆蓋的最小日到最大日,`--from` / `--to` 可覆寫,`--delay-ms` 預設 3000。
 
 上述腳本與日／月／季回補腳本的數值旗標共用 `scripts/lib/cli.mjs`;裸旗標不會被當成數值 `1`,而會由既有的數值驗證訊息拒絕。
 

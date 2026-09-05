@@ -96,6 +96,72 @@ function parseJsonBytes(bytes, label) {
   }
 }
 
+export function parseTwseSblHist(payload, expectedYmd) {
+  if (payload?.stat !== 'OK') throw new Error('TWT93U: stat is not OK');
+  if (payload.date !== expectedYmd) {
+    throw new Error(`TWT93U: response date ${payload?.date} does not match ${expectedYmd}`);
+  }
+  const fields = payload.fields;
+  const expectedFields = [
+    '代號', '名稱', '前日餘額', '賣出', '買進', '現券', '今日餘額', '次一營業日限額',
+    '前日餘額', '當日賣出', '當日還券', '當日調整', '當日餘額', '次一營業日可限額', '備註',
+  ];
+  if (!Array.isArray(fields) || fields.length !== expectedFields.length) {
+    throw new Error('TWT93U: fields length must be 15');
+  }
+  for (let index = 0; index < expectedFields.length; index += 1) {
+    if (fields[index] !== expectedFields[index]) {
+      throw new Error(`TWT93U: fields[${index}] must be ${expectedFields[index]}`);
+    }
+  }
+  if (!Array.isArray(payload.data)) throw new Error('TWT93U: data is not an array');
+  return payload.data.map((row, index) => {
+    if (!Array.isArray(row) || row.length !== expectedFields.length) {
+      throw new Error(`TWT93U: data[${index}] width must be 15`);
+    }
+    return {
+      SecuritiesCompanyCode: String(row[0] ?? '').trim(),
+      CompanyName: String(row[1] ?? '').trim(),
+      SecuritiesBorrowingBalanceOfTheMarketDay: row[12],
+    };
+  });
+}
+
+export function parseTpexSblHist(payload, expectedYmd) {
+  if (payload?.stat !== 'ok') throw new Error('TPEX_SBL: stat is not ok');
+  if (payload.date !== expectedYmd) {
+    throw new Error(`TPEX_SBL: response date ${payload?.date} does not match ${expectedYmd}`);
+  }
+  const table = payload?.tables?.[0];
+  if (!table || !Array.isArray(table.data)) {
+    throw new Error('TPEX_SBL: tables[0] is invalid');
+  }
+  const fields = table.fields;
+  const expectedFields = [
+    '股票代號', '股票名稱', '前日餘額', '賣出', '買進', '現券', '當日餘額', '限額',
+    '前日餘額', '當日賣出', '當日還券', '當日調整數額', '當日餘額',
+    '次一營業日可借券賣出限額', '備註',
+  ];
+  if (!Array.isArray(fields) || fields.length !== expectedFields.length) {
+    throw new Error('TPEX_SBL: fields length must be 15');
+  }
+  for (let index = 0; index < expectedFields.length; index += 1) {
+    if (fields[index] !== expectedFields[index]) {
+      throw new Error(`TPEX_SBL: fields[${index}] must be ${expectedFields[index]}`);
+    }
+  }
+  return table.data.map((row, index) => {
+    if (!Array.isArray(row) || row.length !== expectedFields.length) {
+      throw new Error(`TPEX_SBL: data[${index}] width must be 15`);
+    }
+    return {
+      SecuritiesCompanyCode: String(row[0] ?? '').trim(),
+      CompanyName: String(row[1] ?? '').trim(),
+      SecuritiesBorrowingBalanceOfTheMarketDay: row[12],
+    };
+  });
+}
+
 async function fetchBytesWithRetry(url, {
   delayMs,
   maxRetries,
@@ -178,6 +244,11 @@ async function fetchEndpoint(endpoint, iso, options) {
   return result.bytes;
 }
 
+async function fetchDataEndpointIfMissing(rootDir, endpoint, iso, options) {
+  if (await fileExists(rawPath(rootDir, endpoint.sourceDataset, iso))) return null;
+  return fetchEndpoint(endpoint, iso, options);
+}
+
 export async function runBackfill({
   rootDir = process.cwd(),
   fromIso,
@@ -247,6 +318,7 @@ export async function runBackfill({
     let t86Bytes = null;
     let miMargnBytes = null;
     let bwibbuBytes = null;
+    let twseSblBytes = null;
     if (twseOpenApiCloseExists) {
       summary.openApiDays += 1;
       twseTrading = true;
@@ -262,13 +334,15 @@ export async function runBackfill({
     }
 
     if (twseTrading) {
-      t86Bytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_t86_hist, iso, fetchOptions);
-      parseTwseT86Hist(parseJsonBytes(t86Bytes, 'T86'));
-      bwibbuBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_bwibbu_hist, iso, fetchOptions);
-      parseTwseBwibbuHist(parseJsonBytes(bwibbuBytes, 'BWIBBU_d'));
+      t86Bytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_t86_hist, iso, fetchOptions);
+      if (t86Bytes) parseTwseT86Hist(parseJsonBytes(t86Bytes, 'T86'));
+      bwibbuBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_bwibbu_hist, iso, fetchOptions);
+      if (bwibbuBytes) parseTwseBwibbuHist(parseJsonBytes(bwibbuBytes, 'BWIBBU_d'));
+      twseSblBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_sbl_hist, iso, fetchOptions);
+      if (twseSblBytes) parseTwseSblHist(parseJsonBytes(twseSblBytes, 'TWT93U'), isoToYmd(iso));
       if (!twseOpenApiCloseExists) {
-        miMargnBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.twse_mi_margn_hist, iso, fetchOptions);
-        parseTwseMiMargnHist(parseJsonBytes(miMargnBytes, 'MI_MARGN'));
+        miMargnBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.twse_mi_margn_hist, iso, fetchOptions);
+        if (miMargnBytes) parseTwseMiMargnHist(parseJsonBytes(miMargnBytes, 'MI_MARGN'));
       }
     }
 
@@ -297,6 +371,12 @@ export async function runBackfill({
         bwibbuBytes,
       ));
     }
+    if (twseSblBytes) {
+      rawWrites.push(writeRawBytesOnChange(
+        rawPath(rootDir, BACKFILL_ENDPOINTS.twse_sbl_hist.sourceDataset, iso),
+        twseSblBytes,
+      ));
+    }
 
     const tpexOpenApiCloseExists = await fileExists(rawPath(rootDir, 'tpex/mainboard_close', iso));
     let tpexTrading = false;
@@ -305,6 +385,7 @@ export async function runBackfill({
     let tpexInstiBytes = null;
     let tpexMarginBytes = null;
     let tpexPeBytes = null;
+    let tpexSblBytes = null;
     if (tpexOpenApiCloseExists) {
       summary.tpexOpenApiDays += 1;
       tpexTrading = true;
@@ -316,16 +397,18 @@ export async function runBackfill({
         parseTpexDailyQuotesHist(tpexDaily);
         tpexTrading = true;
         tpexSource = 'legacy';
-        tpexInstiBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.tpex_insti_hist, iso, fetchOptions);
-        parseTpexInstiHist(parseJsonBytes(tpexInstiBytes, 'TPEX_INSTI'));
-        tpexMarginBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.tpex_margin_hist, iso, fetchOptions);
-        parseTpexMarginHist(parseJsonBytes(tpexMarginBytes, 'TPEX_MARGIN'));
+        tpexInstiBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_insti_hist, iso, fetchOptions);
+        if (tpexInstiBytes) parseTpexInstiHist(parseJsonBytes(tpexInstiBytes, 'TPEX_INSTI'));
+        tpexMarginBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_margin_hist, iso, fetchOptions);
+        if (tpexMarginBytes) parseTpexMarginHist(parseJsonBytes(tpexMarginBytes, 'TPEX_MARGIN'));
       }
     }
 
     if (tpexTrading) {
-      tpexPeBytes = await fetchEndpoint(BACKFILL_ENDPOINTS.tpex_pe_hist, iso, fetchOptions);
-      parseTpexPeHist(parseJsonBytes(tpexPeBytes, 'TPEX_PE'));
+      tpexPeBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_pe_hist, iso, fetchOptions);
+      if (tpexPeBytes) parseTpexPeHist(parseJsonBytes(tpexPeBytes, 'TPEX_PE'));
+      tpexSblBytes = await fetchDataEndpointIfMissing(rootDir, BACKFILL_ENDPOINTS.tpex_sbl_hist, iso, fetchOptions);
+      if (tpexSblBytes) parseTpexSblHist(parseJsonBytes(tpexSblBytes, 'TPEX_SBL'), isoToYmd(iso));
     }
 
     if (tpexTrading && tpexDailyBytes) {
@@ -350,6 +433,12 @@ export async function runBackfill({
       rawWrites.push(writeRawBytesOnChange(
         rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_pe_hist.sourceDataset, iso),
         tpexPeBytes,
+      ));
+    }
+    if (tpexSblBytes) {
+      rawWrites.push(writeRawBytesOnChange(
+        rawPath(rootDir, BACKFILL_ENDPOINTS.tpex_sbl_hist.sourceDataset, iso),
+        tpexSblBytes,
       ));
     }
     summary.rawWritten += (await Promise.all(rawWrites)).filter(Boolean).length;
