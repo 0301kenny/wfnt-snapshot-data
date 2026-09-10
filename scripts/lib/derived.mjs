@@ -21,14 +21,16 @@ export const DERIVED_INPUT_DATASETS = new Set([
   'twse/mi_index_hist',
   'twse/t86_hist',
   'twse/mi_margn_hist',
+  'twse/sbl_hist',
   'tpex/daily_quotes_hist',
   'tpex/insti_hist',
   'tpex/margin_hist',
+  'tpex/sbl_hist',
   'twse/bwibbu_hist',
   'tpex/pe_hist',
 ]);
 
-const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'];
+const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd', 'sb', 'ss'];
 const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
 const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
@@ -339,6 +341,65 @@ export function parseTwseMiMargnHist(payload) {
   }));
 }
 
+export function parseTwseSblDerived(payload) {
+  if (payload?.stat !== 'OK') throw new Error('TWSE_SBL: stat is not OK');
+  if (!Array.isArray(payload.fields)) throw new Error('TWSE_SBL: fields is not an array');
+  if (!Array.isArray(payload.groups)) throw new Error('TWSE_SBL: groups is not an array');
+  if (!Array.isArray(payload.data)) throw new Error('TWSE_SBL: data is not an array');
+
+  const blocks = new Map();
+  let start = 0;
+  for (const group of payload.groups) {
+    if (!Number.isInteger(group?.span) || group.span <= 0) {
+      throw new Error('TWSE_SBL: invalid group span');
+    }
+    const end = start + group.span;
+    if (end > payload.fields.length) throw new Error('TWSE_SBL: group spans exceed fields');
+    if (['股票', '融券', '借券賣出'].includes(group.title)) {
+      if (blocks.has(group.title)) throw new Error(`TWSE_SBL: duplicate group ${group.title}`);
+      blocks.set(group.title, { start, end });
+    }
+    start = end;
+  }
+  if (start !== payload.fields.length) throw new Error('TWSE_SBL: group spans do not match fields');
+
+  const expectedStarts = { 股票: 0, 融券: 2, 借券賣出: 8 };
+  for (const [title, expectedStart] of Object.entries(expectedStarts)) {
+    if (blocks.get(title)?.start !== expectedStart) {
+      throw new Error(`TWSE_SBL: invalid group ${title}`);
+    }
+  }
+  const indexInBlock = (title, field) => {
+    const block = blocks.get(title);
+    const indexes = [];
+    for (let index = block.start; index < block.end; index += 1) {
+      if (payload.fields[index] === field) indexes.push(index);
+    }
+    if (indexes.length !== 1) {
+      throw new Error(`TWSE_SBL: group ${title} must contain exactly one field ${field}`);
+    }
+    return indexes[0];
+  };
+
+  const indexes = {
+    id: indexInBlock('股票', '代號'),
+    name: indexInBlock('股票', '名稱'),
+    sale: indexInBlock('借券賣出', '當日賣出'),
+    balance: indexInBlock('借券賣出', '當日餘額'),
+  };
+  return payload.data.map((row, index) => {
+    if (!Array.isArray(row) || row.length !== payload.fields.length) {
+      throw new Error(`TWSE_SBL: data[${index}] width must be ${payload.fields.length}`);
+    }
+    return {
+      SecuritiesCompanyCode: String(row[indexes.id] ?? '').trim(),
+      CompanyName: String(row[indexes.name] ?? '').trim(),
+      SecuritiesBorrowingBalanceOfTheMarketDay: compactNumber(row[indexes.balance]),
+      SecuritiesBorrowingSaleOfTheMarketDay: compactNumber(row[indexes.sale]),
+    };
+  });
+}
+
 export function parseTwseT86Hist(payload) {
   if (payload?.stat !== 'OK') throw new Error('T86: stat is not OK');
   if (!Array.isArray(payload.data)) throw new Error('T86: data is not an array');
@@ -450,6 +511,34 @@ export function parseTpexMarginHist(payload) {
     MarginPurchaseBalance: compactNumber(row?.[indexes.marginBalance]),
     ShortSaleBalance: compactNumber(row?.[indexes.shortBalance]),
   }));
+}
+
+export function parseTpexSblDerived(payload) {
+  const table = requiredTpexLegacyTable(payload, 'TPEX_SBL');
+  const expectedFields = [
+    '股票代號', '股票名稱', '前日餘額', '賣出', '買進', '現券', '當日餘額', '限額',
+    '前日餘額', '當日賣出', '當日還券', '當日調整數額', '當日餘額',
+    '次一營業日可借券賣出限額', '備註',
+  ];
+  if (!Array.isArray(table.fields) || table.fields.length !== expectedFields.length) {
+    throw new Error('TPEX_SBL: fields length must be 15');
+  }
+  for (let index = 0; index < expectedFields.length; index += 1) {
+    if (table.fields[index] !== expectedFields[index]) {
+      throw new Error(`TPEX_SBL: fields[${index}] must be ${expectedFields[index]}`);
+    }
+  }
+  return table.data.map((row, index) => {
+    if (!Array.isArray(row) || row.length !== expectedFields.length) {
+      throw new Error(`TPEX_SBL: data[${index}] width must be 15`);
+    }
+    return {
+      SecuritiesCompanyCode: String(row[0] ?? '').trim(),
+      CompanyName: String(row[1] ?? '').trim(),
+      SecuritiesBorrowingBalanceOfTheMarketDay: compactNumber(row[12]),
+      SecuritiesBorrowingSaleOfTheMarketDay: compactNumber(row[9]),
+    };
+  });
 }
 
 export function parseTpexPeHist(payload) {
@@ -735,6 +824,17 @@ function upsertRows(rows, nextRow, window) {
   return window ? kept.slice(-window) : kept;
 }
 
+function padRowsToWidth(rows, width) {
+  return rows.map((row) => {
+    if (row.length > width) {
+      throw new Error(`derived row width ${row.length} exceeds cols width ${width}`);
+    }
+    return row.length === width
+      ? row
+      : [...row, ...Array(width - row.length).fill(null)];
+  });
+}
+
 async function upsertSymbol(rootDir, item, row, window) {
   const path = join(rootDir, 'data', 'derived', 'symbols', p2(item.id), `${item.id}.json`);
   const current = await readExistingJson(path, {
@@ -745,7 +845,10 @@ async function upsertSymbol(rootDir, item, row, window) {
     cols: SYMBOL_COLS,
     rows: [],
   });
-  const rows = upsertRows(current.rows ?? [], row, window);
+  const rows = padRowsToWidth(
+    upsertRows(current.rows ?? [], row, window),
+    SYMBOL_COLS.length,
+  );
   const next = {
     id: item.id,
     name: item.name,
@@ -935,6 +1038,8 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     tpexMarginHistRaw,
     twseValuationHistRaw,
     tpexValuationHistRaw,
+    twseSblRaw,
+    tpexSblRaw,
   ] = await Promise.all([
     readJsonRaw(rootDir, 'twse/mi_index', isoDate),
     readJsonRaw(rootDir, 'twse/stock_day_all', isoDate),
@@ -952,6 +1057,8 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     readJsonRaw(rootDir, 'tpex/margin_hist', isoDate),
     readJsonRaw(rootDir, 'twse/bwibbu_hist', isoDate),
     readJsonRaw(rootDir, 'tpex/pe_hist', isoDate),
+    readJsonRaw(rootDir, 'twse/sbl_hist', isoDate),
+    readJsonRaw(rootDir, 'tpex/sbl_hist', isoDate),
   ]);
   const tpexClose = tpexCloseOpenApi !== null
     ? tpexCloseOpenApi
@@ -974,11 +1081,15 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     ? twseValuationOpenApi
     : twseValuationHistRaw === null ? null : parseTwseBwibbuHist(twseValuationHistRaw);
   const tpexValuation = tpexValuationHistRaw === null ? null : parseTpexPeHist(tpexValuationHistRaw);
+  const twseSbl = twseSblRaw === null ? null : parseTwseSblDerived(twseSblRaw);
+  const tpexSbl = tpexSblRaw === null ? null : parseTpexSblDerived(tpexSblRaw);
 
   const twseMarginById = mapBy(twseMargin, '股票代號');
   const twseT86ById = mapBy(twseT86, 'id');
+  const twseSblById = mapBy(twseSbl, 'SecuritiesCompanyCode');
   const tpexMarginById = mapBy(tpexMargin, 'SecuritiesCompanyCode');
   const tpexInstiById = mapBy(tpexInsti, 'SecuritiesCompanyCode');
+  const tpexSblById = mapBy(tpexSbl, 'SecuritiesCompanyCode');
   const twseIds = new Set();
 
   for (const row of twseClose ?? []) {
@@ -987,6 +1098,7 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     twseIds.add(id);
     const [mb, ms] = balanceRow(twseMarginById.get(id), '融資今日餘額', '融券今日餘額');
     const insti = twseT86ById.get(id);
+    const sbl = twseSblById.get(id);
     const didWrite = await upsertSymbol(rootDir, {
       id,
       name: row.Name ?? '',
@@ -1005,6 +1117,8 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
       insti?.ff ?? null,
       insti?.ft ?? null,
       insti?.fd ?? null,
+      sbl?.SecuritiesBorrowingBalanceOfTheMarketDay ?? null,
+      sbl?.SecuritiesBorrowingSaleOfTheMarketDay ?? null,
     ], symbolWindow);
     if (didWrite) written.symbols += 1;
   }
@@ -1018,6 +1132,7 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
     }
     const [mb, ms] = balanceRow(tpexMarginById.get(id), 'MarginPurchaseBalance', 'ShortSaleBalance');
     const insti = tpexInstiById.get(id);
+    const sbl = tpexSblById.get(id);
     const didWrite = await upsertSymbol(rootDir, {
       id,
       name: row.CompanyName ?? '',
@@ -1036,6 +1151,8 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
       compactNumber(insti?.[TPEX_INSTI_FIELDS.ff]),
       compactNumber(insti?.[TPEX_INSTI_FIELDS.ft]),
       compactNumber(insti?.[TPEX_INSTI_FIELDS.fd]),
+      sbl?.SecuritiesBorrowingBalanceOfTheMarketDay ?? null,
+      sbl?.SecuritiesBorrowingSaleOfTheMarketDay ?? null,
     ], symbolWindow);
     if (didWrite) written.symbols += 1;
   }

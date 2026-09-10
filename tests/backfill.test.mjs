@@ -21,7 +21,9 @@ import {
   parseTpexDailyQuotesHist,
   parseTpexInstiHist,
   parseTpexMarginHist,
+  parseTpexSblDerived,
   parseTwseMiMargnHist,
+  parseTwseSblDerived,
   parseTwseBwibbuHist,
   parseTwseT86Hist,
 } from '../scripts/lib/derived.mjs';
@@ -129,7 +131,12 @@ function bwibbuFixture({ empty = false } = {}) {
   };
 }
 
-function twseSblFixture({ balance = '7,654', date = '20260706' } = {}) {
+function twseSblFixture({
+  balance = '7,654',
+  sale = '100',
+  marginBalance = '106',
+  date = '20260706',
+} = {}) {
   return {
     stat: 'OK',
     date,
@@ -139,9 +146,15 @@ function twseSblFixture({ balance = '7,654', date = '20260706' } = {}) {
       '前日餘額', '當日賣出', '當日還券', '當日調整', '當日餘額', '次一營業日可限額', '備註',
     ],
     data: [[
-      '2330', '台積電', '111', '2', '3', '4', '106', '1,000',
-      '8,000', '100', '400', '-46', balance, '2,000', '',
+      '2330', '台積電', '111', '2', '3', '4', marginBalance, '1,000',
+      '8,000', sale, '400', '-46', balance, '2,000', '',
     ]],
+    groups: [
+      { title: '股票', span: 2 },
+      { title: '融券', span: 6 },
+      { title: '借券賣出', span: 6 },
+      { title: '', span: 1 },
+    ],
   };
 }
 
@@ -235,7 +248,12 @@ function tpexMarginFixture({ invalid = false } = {}) {
   };
 }
 
-function tpexSblFixture({ balance = '3,210', marginBalance = '8,765', date = '20260706' } = {}) {
+function tpexSblFixture({
+  balance = '3,210',
+  sale = '500',
+  marginBalance = '8,765',
+  date = '20260706',
+} = {}) {
   return {
     stat: 'ok',
     date,
@@ -249,7 +267,7 @@ function tpexSblFixture({ balance = '3,210', marginBalance = '8,765', date = '20
       ],
       data: [[
         '5483', '中美晶', '9,000', '500', '250', '10', marginBalance, '20,000',
-        '3,000', '500', '250', '-40', balance, '10,000', '',
+        '3,000', sale, '250', '-40', balance, '10,000', '',
       ]],
     }],
   };
@@ -375,6 +393,112 @@ test('securities lending parsers select the borrowing balance and reject respons
   );
   assert.throws(() => parseTwseSblHist(twseSblFixture(), '20260707'), /does not match 20260707/);
   assert.throws(() => parseTpexSblHist(tpexSblFixture(), '20260707'), /does not match 20260707/);
+});
+
+test('SBL derived parsers isolate borrowing blocks and reject TPEX fields drift', (t) => {
+  const twseFixture = twseSblFixture({
+    balance: '7,654',
+    sale: '1,234',
+    marginBalance: '106',
+  });
+  twseFixture.fields[6] = '當日餘額';
+  assert.notEqual(twseFixture.data[0][6], twseFixture.data[0][12]);
+  assert.deepEqual(parseTwseSblDerived(twseFixture)[0], {
+    SecuritiesCompanyCode: '2330',
+    CompanyName: '台積電',
+    SecuritiesBorrowingBalanceOfTheMarketDay: 7654,
+    SecuritiesBorrowingSaleOfTheMarketDay: 1234,
+  });
+  const twseGroupDrift = structuredClone(twseFixture);
+  twseGroupDrift.groups[1].span = 5;
+  twseGroupDrift.groups[2].span = 7;
+  assert.throws(() => parseTwseSblDerived(twseGroupDrift), /invalid group 借券賣出/);
+
+  const tpexFixture = tpexSblFixture({
+    balance: '3,210',
+    sale: '987',
+    marginBalance: '8,765',
+  });
+  assert.notEqual(tpexFixture.tables[0].data[0][6], tpexFixture.tables[0].data[0][12]);
+  assert.deepEqual(parseTpexSblDerived(tpexFixture)[0], {
+    SecuritiesCompanyCode: '5483',
+    CompanyName: '中美晶',
+    SecuritiesBorrowingBalanceOfTheMarketDay: 3210,
+    SecuritiesBorrowingSaleOfTheMarketDay: 987,
+  });
+  const tpexFieldsDrift = structuredClone(tpexFixture);
+  tpexFieldsDrift.tables[0].fields[9] = '欄位漂移';
+  assert.throws(
+    () => parseTpexSblDerived(tpexFieldsDrift),
+    /TPEX_SBL: fields\[9\] must be 當日賣出/,
+  );
+
+  t.diagnostic('TWSE_SBL_GROUP_SELECTION=margin_當日餘額:106,sbl_當日餘額:7654,result:7654; GROUP_DRIFT=THREW');
+  t.diagnostic('TPEX_SBL_FIELDS_DRIFT=fields[9]:欄位漂移,RESULT=THREW');
+  t.diagnostic('CROSS_MARKET_SBL_BALANCE_SELECTION=twse_margin:106,twse_sbl:7654,tpex_margin:8765,tpex_sbl:3210');
+});
+
+test('SBL values project into trailing symbol derived columns for both markets', async (t) => {
+  await withTempDir(async (root) => {
+    await writeRaw(root, 'twse/mi_index_hist', '2026-07-06', jsonBytes(miIndexFixture()));
+    await writeRaw(root, 'twse/sbl_hist', '2026-07-06', jsonBytes(twseSblFixture({
+      balance: '7,654',
+      sale: '1,234',
+    })));
+    await writeRaw(root, 'tpex/daily_quotes_hist', '2026-07-06', jsonBytes(tpexDailyFixture()));
+    await writeRaw(root, 'tpex/sbl_hist', '2026-07-06', jsonBytes(tpexSblFixture({
+      balance: '3,210',
+      sale: '987',
+    })));
+
+    await applyDailyDate(root, '2026-07-06');
+    const twse = await readJson(root, 'data/derived/symbols/23/2330.json');
+    const tpex = await readJson(root, 'data/derived/symbols/54/5483.json');
+    const cols = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd', 'sb', 'ss'];
+    assert.deepEqual(twse.cols, cols);
+    assert.deepEqual(twse.rows, [[
+      20260706, 1080, 1090, 1075, 1085, 32145678, 45210,
+      null, null, null, null, null, null, 7654, 1234,
+    ]]);
+    assert.deepEqual(tpex.cols, cols);
+    assert.deepEqual(tpex.rows, [[
+      20260706, 244.5, 250, 234.5, 235.5, 32146669, 28003,
+      null, null, null, null, null, null, 3210, 987,
+    ]]);
+    t.diagnostic('SBL_SYMBOL_ROWS=twse:20260706/sb=7654/ss=1234,tpex:20260706/sb=3210/ss=987');
+  });
+});
+
+test('symbol upsert upgrades every legacy thirteen-column row with trailing nulls', async () => {
+  await withTempDir(async (root) => {
+    const legacyCols = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'];
+    const legacyRows = [
+      [20260702, 1000, 1010, 990, 1005, 11111111, 12345, 9000, 100, 101, 102, 103, 104],
+      [20260703, 1010, 1020, 995, 1015, 22222222, 23456, null, 0, -201, 202, null, -204],
+    ];
+    await writeDerived(root, 'symbols/23/2330.json', {
+      id: '2330', name: '台積電', market: 'twse', updated: '2026-07-03',
+      cols: legacyCols, rows: legacyRows,
+    });
+    await writeRaw(root, 'twse/mi_index_hist', '2026-07-06', jsonBytes(miIndexFixture()));
+
+    await applyDailyDate(root, '2026-07-06');
+    const symbol = await readJson(root, 'data/derived/symbols/23/2330.json');
+    assert.deepEqual(symbol.cols, [...legacyCols, 'sb', 'ss']);
+    assert.deepEqual(symbol.rows.map((row) => row.length), [
+      symbol.cols.length,
+      symbol.cols.length,
+      symbol.cols.length,
+    ]);
+    assert.deepEqual(
+      symbol.rows.slice(0, legacyRows.length).map((row) => row.slice(0, legacyCols.length)),
+      legacyRows,
+    );
+    assert.deepEqual(
+      symbol.rows.slice(0, legacyRows.length).map((row) => row.slice(legacyCols.length)),
+      [[null, null], [null, null]],
+    );
+  });
 });
 
 test('valuation legacy parsers preserve the five-field contract across TWSE and both TPEX schemas', () => {
@@ -537,7 +661,7 @@ test('T86 parser uses field names, sums foreign columns, removes commas, and map
   });
 });
 
-test('MI_MARGN groups select both repeated balances and hist replay fills the thirteen-column TWSE row', async () => {
+test('MI_MARGN groups select both repeated balances and hist replay fills the fifteen-column TWSE row', async () => {
   const [margin] = parseTwseMiMargnHist(miMargnFixture());
   assert.deepEqual(margin, {
     '股票代號': '2330',
@@ -555,8 +679,8 @@ test('MI_MARGN groups select both repeated balances and hist replay fills the th
     await writeRaw(root, 'twse/t86_hist', '2026-07-06', jsonBytes(t86Fixture()));
     await applyDailyDate(root, '2026-07-06');
     const symbol = await readJson(root, 'data/derived/symbols/23/2330.json');
-    assert.deepEqual(symbol.cols, ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd']);
-    assert.deepEqual(symbol.rows, [[20260706, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, 120, 9999, 1200, 400, 300]]);
+    assert.deepEqual(symbol.cols, ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd', 'sb', 'ss']);
+    assert.deepEqual(symbol.rows, [[20260706, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, 120, 9999, 1200, 400, 300, null, null]]);
   });
 });
 
@@ -573,7 +697,7 @@ test('openapi close and margin beat hist while T86 supplies TWSE institution col
     await writeRaw(root, 'twse/t86_hist', '2026-07-06', jsonBytes(t86Fixture()));
     await applyDailyDate(root, '2026-07-06');
     const symbol = await readJson(root, 'data/derived/symbols/23/2330.json');
-    assert.deepEqual(symbol.rows[0], [20260706, 10, 11, 9, 10.5, 100, 20, 30, 40, 9999, 1200, 400, 300]);
+    assert.deepEqual(symbol.rows[0], [20260706, 10, 11, 9, 10.5, 100, 20, 30, 40, 9999, 1200, 400, 300, null, null]);
   });
 });
 
@@ -585,10 +709,10 @@ test('TPEX hist replay fills symbol and market series through the shared daily p
     await applyDailyDate(root, '2026-07-17');
 
     const symbol = await readJson(root, 'data/derived/symbols/54/5483.json');
-    assert.deepEqual(symbol.cols, ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd']);
+    assert.deepEqual(symbol.cols, ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd', 'sb', 'ss']);
     assert.deepEqual(symbol.rows, [[
       20260717, 244.5, 250, 234.5, 235.5, 32146669, 28003,
-      13591, 0, 5977305, 4294211, 1729536, -46442,
+      13591, 0, 5977305, 4294211, 1729536, -46442, null, null,
     ]]);
     const market = await readJson(root, 'data/derived/market.json');
     assert.deepEqual(market.tpex.margin.rows, [[20260717, 13591, 0]]);
@@ -618,7 +742,7 @@ test('same-day TPEX openapi values beat all hist values', async () => {
 
     const symbol = await readJson(root, 'data/derived/symbols/54/5483.json');
     assert.equal(symbol.name, 'openapi');
-    assert.deepEqual(symbol.rows, [[20260717, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]]);
+    assert.deepEqual(symbol.rows, [[20260717, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, null, null]]);
     const market = await readJson(root, 'data/derived/market.json');
     assert.deepEqual(market.tpex.margin.rows, [[20260717, 7, 8]]);
     assert.deepEqual(market.tpex.insti.rows, [[20260717, 9]]);
@@ -637,7 +761,7 @@ test('default symbol window trims a greater-than-1300-row fixture to 1300', asyn
     }
     await writeDerived(root, 'symbols/23/2330.json', {
       id: '2330', name: '台積電', market: 'twse', updated: '2023-07-23',
-      cols: ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'], rows,
+      cols: ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd', 'sb', 'ss'], rows,
     });
     await writeRaw(root, 'twse/mi_index_hist', '2026-07-06', jsonBytes(miIndexFixture()));
     await applyDailyDate(root, '2026-07-06');
@@ -817,7 +941,7 @@ test('existing bearing raw never bypasses TWSE and TPEX trading-day fetches', as
   });
 });
 
-test('applyDailyDate runs for zero raw writes and derived-input writes but skips SBL-only writes', async (t) => {
+test('applyDailyDate runs for zero raw writes, derived-input writes, and SBL-only writes', async (t) => {
   await withTempDir(async (root) => {
     let applyCalls = 0;
     const options = {
@@ -855,7 +979,7 @@ test('applyDailyDate runs for zero raw writes and derived-input writes but skips
     applyCalls = 0;
     const sblOnly = await runBackfill(options);
     assert.equal(sblOnly.rawWritten, 2);
-    assert.equal(applyCalls, 0);
+    assert.equal(applyCalls, 1);
     t.diagnostic(`SBL_ONLY_WRITE_APPLY_CALLS=${applyCalls}`);
   });
 });
@@ -963,7 +1087,7 @@ test('zero raw writes reapplies a changed symbol window', async (t) => {
   });
 });
 
-test('skipping applyDailyDate for SBL-only writes is byte-identical to the base unconditional call', async (t) => {
+test('SBL-only writes invoke applyDailyDate and remain byte-identical to the base unconditional call', async (t) => {
   await withTempDir(async (root) => {
     const optimizedRoot = join(root, 'optimized');
     const baseRoot = join(root, 'base');
@@ -997,7 +1121,7 @@ test('skipping applyDailyDate for SBL-only writes is byte-identical to the base 
       },
     });
     assert.equal(optimized.rawWritten, 2);
-    assert.equal(optimizedApplyCalls, 0);
+    assert.equal(optimizedApplyCalls, 1);
 
     await runBackfill(options(baseRoot));
     await applyDailyDate(baseRoot, '2026-07-06');
@@ -1016,7 +1140,7 @@ test('DERIVED_INPUT_DATASETS exactly matches the namespaces read by applyDailyDa
   const actual = [...applySource.matchAll(/read(?:Json|Text)Raw\(rootDir, '([^']+)', isoDate\)/g)]
     .map((match) => match[1]);
   const registered = [...DERIVED_INPUT_DATASETS];
-  assert.equal(new Set(actual).size, 16);
+    assert.equal(new Set(actual).size, 18);
   assert.deepEqual([...registered].sort(), [...actual].sort());
 
   const drifted = registered.filter((dataset) => dataset !== 'twse/mi_index');
@@ -1144,7 +1268,7 @@ test('existing openapi raw still fetches both valuation histories while preservi
     assert.deepEqual(await readFile(join(root, 'data/raw/twse/sbl_hist/2026/2026-07-06.json')), bodies.TWSE_SBL);
     assert.deepEqual(await readFile(join(root, 'data/raw/tpex/sbl_hist/2026/2026-07-06.json')), bodies.TPEX_SBL);
     const symbol = await readJson(root, 'data/derived/symbols/23/2330.json');
-    assert.deepEqual(symbol.rows[0], [20260706, 10, 11, 9, 10.5, 100, 20, 30, 40, 9999, 1200, 400, 300]);
+    assert.deepEqual(symbol.rows[0], [20260706, 10, 11, 9, 10.5, 100, 20, 30, 40, 9999, 1200, 400, 300, 7654, 100]);
   });
 });
 
