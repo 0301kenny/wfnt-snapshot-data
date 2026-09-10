@@ -217,8 +217,8 @@ data/derived/market.json
   "name": "台積電",
   "market": "twse",
   "updated": "2026-07-03",
-  "cols": ["d", "o", "h", "l", "c", "v", "t", "mb", "ms", "fi", "ff", "ft", "fd"],
-  "rows": [[20260703, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, 120, null, null, null, null]]
+  "cols": ["d", "o", "h", "l", "c", "v", "t", "mb", "ms", "fi", "ff", "ft", "fd", "sb", "ss"],
+  "rows": [[20260703, 1080, 1090, 1075, 1085, 32145678, 45210, 9577, 120, null, null, null, null, null, null]]
 }
 ```
 
@@ -230,6 +230,8 @@ data/derived/market.json
 - `ff`:外資(含陸資)買賣超,單位股。TWSE 為 T86 `外陸資買賣超股數(不含外資自營商)` 加 `外資自營商買賣超股數`;TPEX 來源欄位以去空白後的 `ForeignInvestorsIncludeMainlandAreaInvestors-Difference` 縮寫版為準,不取含 `(Foreign Dealers excluded)` 的長版。
 - `ft`:投信買賣超,單位股。TWSE 取 T86 `投信買賣超股數`;TPEX 取 `SecuritiesInvestmentTrustCompanies-Difference`;缺欄時為 `null`。
 - `fd`:自營商買賣超,單位股。TWSE 取 T86 `自營商買賣超股數`;TPEX 取 `Dealers-Difference`;缺欄時為 `null`。
+- `sb`:借券賣出當日餘額,單位股。TWSE/TPEX 各取 `sbl_hist` 借券賣出區的 `當日餘額`;raw 缺席時為 `null`。
+- `ss`:當日借券賣出,單位股。TWSE/TPEX 各取 `sbl_hist` 借券賣出區的 `當日賣出`;raw 缺席時為 `null`。
 - Rows 依 `d` 升冪,rolling window 預設 1300 筆交易日。
 
 ### TDCC weekly series

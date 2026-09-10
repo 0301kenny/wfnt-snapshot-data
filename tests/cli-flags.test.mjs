@@ -181,7 +181,7 @@ test('legal numeric strings reach all four run paths unchanged', async () => {
         fields: ['證券代號', '證券名稱', '本益比', '殖利率(%)', '股價淨值比'],
         data: [],
       }],
-      ['twse/sbl_hist', { stat: 'OK', date: '20260706', fields: twseSblFields, data: [] }],
+      ['twse/sbl_hist', { stat: 'OK', date: '20260706', fields: twseSblFields, data: [], groups: [{ title: '股票', span: 2 }, { title: '融券', span: 6 }, { title: '借券賣出', span: 6 }, { title: '', span: 1 }] }],
       ['tpex/pe_hist', {
         stat: 'ok',
         tables: [{ fields: ['股票代號', '公司名稱', '本益比', '殖利率(%)', '股價淨值比'], data: [] }],
