@@ -2,7 +2,123 @@
 
 **狀態：READY_FOR_REVIEW**
 
-TICKET-223 實作與 attempt a2 修正均已完成。完整測試在真實 `ticket-223` repo 工作樹全綠；變更保留在 working tree，沒有 commit。全程未使用真實網路、未執行 repo root 的 `build-derived`、未修改真實 `data/`，歷史 `REPORT-070/189/192/194.md` 均未碰觸。
+TICKET-223 實作與 attempt a2 修正均已完成，a2 已由 Orchestrator commit 為 `9d10c17`；attempt a3 的 P1 修正疊在該 commit 上並保留在 working tree，沒有 commit。完整測試在真實 `ticket-223` repo 工作樹全綠。全程未使用真實網路、未執行 repo root 的 `build-derived`、未修改真實 `data/`，歷史 `REPORT-070/189/192/194.md` 均未碰觸。
+
+## attempt a3 — 既有 symbol derived row 升級
+
+### P1 修法
+
+`upsertSymbol` 現在會先完成既有的同日取代、排序與 rolling window，再對**所有將寫出的 row** 執行 `padRowsToWidth(rows, SYMBOL_COLS.length)`：
+
+- row 比目前 `SYMBOL_COLS.length` 短時，只在尾端補足 `null`；不寫死舊 13 欄或新 15 欄，因此日後尾端再擴欄仍沿用同一機制。
+- row 已符合寬度時原樣保留；既有欄位不轉換、不覆寫、不排序 row 內部值。
+- row 比 schema 更寬時直接 throw，不以截斷方式破壞既有值；因此 `upsertSymbol` 成功寫出的每筆 row 寬度必定等於 `SYMBOL_COLS.length`。
+
+本輪只改 `scripts/lib/derived.mjs` 的 symbol upsert 與對應測試；a2 已通過的 parser、投影、CLI fixture、守衛及既有斷言均未修改。
+
+### 新增升級回歸測試
+
+新增 `symbol upsert upgrades every legacy thirteen-column row with trailing nulls`：先建立 `cols` 為舊 13 欄、含兩筆 13 格不同日期資料的 `symbols/23/2330.json`，再以 `applyDailyDate` 投影第三個日期。測試精確斷言：
+
+1. 輸出 `cols` 是完整 15 欄。
+2. 三筆 row 寬度全部等於輸出 `cols.length`，即 `[15, 15, 15]`。
+3. 兩筆舊 row 的前 13 格與升級前完整 `deepEqual`。
+4. 兩筆舊 row 新增的尾端值完整等於 `[[null, null], [null, null]]`。
+
+正向 targeted test：
+
+```text
+ok 1 - symbol upsert upgrades every legacy thirteen-column row with trailing nulls
+# tests 1
+# pass 1
+# fail 0
+```
+
+### 消融對照
+
+暫時將 `upsertSymbol` 還原成直接使用 `upsertRows(...)`、拿掉所有 row 的正規化後，同一條測試以 exit code 1 轉紅，實際輸出如下；其後已立即還原 production 修正：
+
+```text
+not ok 1 - symbol upsert upgrades every legacy thirteen-column row with trailing nulls
+  error: |-
+    Expected values to be strictly deep-equal:
+    + actual - expected
+
+      [
+    +   13,
+    +   13,
+        15,
+    -   15,
+    -   15
+      ]
+# tests 1
+# pass 0
+# fail 1
+```
+
+消融時 `actual` 明確為 `[13, 13, 15]`，正是兩筆舊 row 未補欄、只有新日期 row 為 15 格的 P1。
+
+### 其他 upsert 路徑盤點（只回報，不修）
+
+其他路徑存在相同的**未來 schema 擴欄潛在風險**，但本票目前沒有造成實際寬度不一致：
+
+- `upsertTdcc` 會重寫 `cols: TDCC_COLS`、原樣保留既有 rows；若未來 `TDCC_COLS` 擴欄，會遇到同型問題。現在 schema 與 row producer 均固定為 6 欄，本票未變更。
+- valuation／revenue／quarterly 共用 `upsertFundamental`；`fundamentalRows` 原樣取既有 rows，`fundamentalSeriesPayload` 重新寫 registry 的 cols。任一 fundamental series 未來擴欄時也有同型風險。現在三者 schema 與 row producer 均為 4 欄，本票未變更。
+- `market.json` 的 `normalizeMarket` 也會套目前 cols、保留既有 rows，屬同型潛在風險；本票沒有擴充 market schema。
+
+`9d10c17^..9d10c17` 的欄位 diff 只有 `SYMBOL_COLS` 從 13 擴為 15；TDCC、valuation、revenue、quarterly 與 market 欄位均未變。本輪依 Scope 只修目前已發生的 symbol 升級問題。
+
+### 239 個既有 SBL 日期的 derived 回填
+
+唯讀盤點目前 `data/raw/twse/sbl_hist` 與 `data/raw/tpex/sbl_hist` 各有 239 個日期，兩市場日期集合完全重疊，聯集為 239 天（2025-09-01～2026-09-09）。`applyDailyDate` 一次只處理傳入日期，因此 a3 修正與後續日更不會自動把這 239 天的 `sb`／`ss` 全部回填。
+
+要以既有本地 raw、同一條 canonical incremental transformation path 回放這 239 天，可在 repo root 執行以下指令；它不發網路請求，但會更新真實 `data/derived/`：
+
+```bash
+node --input-type=module <<'NODE'
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import { applyDailyDate } from './scripts/lib/derived.mjs';
+
+const dates = new Set();
+for (const market of ['twse', 'tpex']) {
+  const base = join('data', 'raw', market, 'sbl_hist');
+  for (const year of await readdir(base, { withFileTypes: true })) {
+    if (!year.isDirectory()) continue;
+    for (const file of await readdir(join(base, year.name), { withFileTypes: true })) {
+      if (file.isFile() && /^\d{4}-\d{2}-\d{2}\.json$/.test(file.name)) {
+        dates.add(file.name.slice(0, -5));
+      }
+    }
+  }
+}
+
+const ordered = [...dates].sort();
+console.log(`[replay] dates=${ordered.length} from=${ordered[0]} to=${ordered.at(-1)}`);
+for (const [index, date] of ordered.entries()) {
+  const result = await applyDailyDate(process.cwd(), date);
+  console.log(`[replay] ${index + 1}/${ordered.length} ${date} symbols=${result.symbols}`);
+}
+NODE
+```
+
+沿用 a2 實測量級約 17.5 秒／日，`239 × 17.5 = 4,182.5` 秒，估計約 **70 分鐘（1.16 小時）**，實際時間依磁碟與主機而異。這是只回放 239 個 SBL 日期的本地 incremental projection；不應改用 repo root 的高成本全量 `build-derived`。
+
+### a3 完整測試
+
+真實 repo 工作樹執行 `node --test tests/`：
+
+```text
+1..105
+# tests 105
+# suites 0
+# pass 105
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3401.15772
+```
 
 ## attempt a2 修正內容
 

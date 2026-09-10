@@ -824,6 +824,17 @@ function upsertRows(rows, nextRow, window) {
   return window ? kept.slice(-window) : kept;
 }
 
+function padRowsToWidth(rows, width) {
+  return rows.map((row) => {
+    if (row.length > width) {
+      throw new Error(`derived row width ${row.length} exceeds cols width ${width}`);
+    }
+    return row.length === width
+      ? row
+      : [...row, ...Array(width - row.length).fill(null)];
+  });
+}
+
 async function upsertSymbol(rootDir, item, row, window) {
   const path = join(rootDir, 'data', 'derived', 'symbols', p2(item.id), `${item.id}.json`);
   const current = await readExistingJson(path, {
@@ -834,7 +845,10 @@ async function upsertSymbol(rootDir, item, row, window) {
     cols: SYMBOL_COLS,
     rows: [],
   });
-  const rows = upsertRows(current.rows ?? [], row, window);
+  const rows = padRowsToWidth(
+    upsertRows(current.rows ?? [], row, window),
+    SYMBOL_COLS.length,
+  );
   const next = {
     id: item.id,
     name: item.name,

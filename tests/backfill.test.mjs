@@ -469,6 +469,38 @@ test('SBL values project into trailing symbol derived columns for both markets',
   });
 });
 
+test('symbol upsert upgrades every legacy thirteen-column row with trailing nulls', async () => {
+  await withTempDir(async (root) => {
+    const legacyCols = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd'];
+    const legacyRows = [
+      [20260702, 1000, 1010, 990, 1005, 11111111, 12345, 9000, 100, 101, 102, 103, 104],
+      [20260703, 1010, 1020, 995, 1015, 22222222, 23456, null, 0, -201, 202, null, -204],
+    ];
+    await writeDerived(root, 'symbols/23/2330.json', {
+      id: '2330', name: '台積電', market: 'twse', updated: '2026-07-03',
+      cols: legacyCols, rows: legacyRows,
+    });
+    await writeRaw(root, 'twse/mi_index_hist', '2026-07-06', jsonBytes(miIndexFixture()));
+
+    await applyDailyDate(root, '2026-07-06');
+    const symbol = await readJson(root, 'data/derived/symbols/23/2330.json');
+    assert.deepEqual(symbol.cols, [...legacyCols, 'sb', 'ss']);
+    assert.deepEqual(symbol.rows.map((row) => row.length), [
+      symbol.cols.length,
+      symbol.cols.length,
+      symbol.cols.length,
+    ]);
+    assert.deepEqual(
+      symbol.rows.slice(0, legacyRows.length).map((row) => row.slice(0, legacyCols.length)),
+      legacyRows,
+    );
+    assert.deepEqual(
+      symbol.rows.slice(0, legacyRows.length).map((row) => row.slice(legacyCols.length)),
+      [[null, null], [null, null]],
+    );
+  });
+});
+
 test('valuation legacy parsers preserve the five-field contract across TWSE and both TPEX schemas', () => {
   assert.deepEqual(parseTwseBwibbuHist(bwibbuFixture())[0], {
     Code: '1101', Name: '台泥', PEratio: null, PBratio: 0.79, DividendYield: 3.3,
