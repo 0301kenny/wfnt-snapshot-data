@@ -124,7 +124,13 @@ test('merged TWSE weighted index raw dates match the margin date oracle', async 
   t.diagnostic(`merged rows=${indexDates.length}`);
   t.diagnostic(`only in index=${onlyInIndex.length}; only in margin=${onlyInMargin.length}`);
   t.diagnostic(`20210719=${indexByDate.get(20210719)}`);
-  assert.equal(indexDates.length, 1253);
+  // 不可硬編列數：raw 每個交易日都會長，寫死的數字必然過期。
+  // （2026-09-18 實際踩到：全量重建期間 raw 多了 5 天，1253 → 1258，這條紅了，
+  //   而同一測試裡真正有意義的雙向零差集與 20210719 兩條都是綠的。）
+  // 列數的正確斷言是「與 margin 相同」——兩者都由同一份 live 資料推導，不會過期。
+  // 1253 保留為下限，只用來擋「大量掉列」這種退步。
+  assert.ok(indexDates.length >= 1253, `merged rows shrank to ${indexDates.length}`);
+  assert.equal(indexDates.length, marginDates.length);
   assert.deepEqual(onlyInIndex, []);
   assert.deepEqual(onlyInMargin, []);
   assert.equal(indexByDate.get(20210719), 17789.25);
