@@ -125,3 +125,84 @@ ok 4 - applyDailyDate uses daily weighted index before historical fallback and i
 - 未執行 `node scripts/build-derived.mjs`，也未對真實 `data/derived/` 做全量重建。完整測試內既有的 rebuild 測試只操作測試 tmpdir。
 - 未手動編輯任何 `data/**`。
 - 未建立分支、未切換 main、未 commit。
+
+## Reviewer P2 修正輪：PASS
+
+保留原本將 `指數` 移到 index 2 的 fixture，另加一個將 `收盤指數` 移到 index 2 的 fixture：
+
+```text
+fields: 指數, 漲跌(+/-), 收盤指數, 漲跌點數
+daily=46940.49; historicalNameReordered=17789.25; historicalCloseReordered=17789.25
+```
+
+因此同一測試會分別攔截 `indexes.name` 與 `indexes.close` 被寫死成預設索引的退步。
+
+### 還原後完整測試
+
+命令：
+
+```text
+node --test tests/
+```
+
+實跑輸出：
+
+```text
+1..109
+# tests 109
+# suites 0
+# pass 109
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 8203.511123
+```
+
+### close 索引消融：預期轉紅
+
+暫時將 `row[indexes.close]` 改成 `row[1]`，執行：
+
+```text
+node --test --test-name-pattern="TWSE weighted index parsers handle daily and reordered historical shapes" tests/twse-weighted-index.test.mjs
+```
+
+實跑輸出（exit code 1）：
+
+```text
+not ok 1 - TWSE weighted index parsers handle daily and reordered historical shapes
+error: |-
+  Expected values to be strictly equal:
+
+  null !== 17789.25
+
+# daily=46940.49; historicalNameReordered=17789.25; historicalCloseReordered=null
+1..1
+# tests 1
+# pass 0
+# fail 1
+```
+
+此失敗落在新增的 close-reorder assertion；驗證後已還原。
+
+### name 索引消融：預期轉紅
+
+暫時將 `row[indexes.name]` 改成 `row[0]`，執行同一條單測命令。
+
+實跑輸出（exit code 1）：
+
+```text
+not ok 1 - TWSE weighted index parsers handle daily and reordered historical shapes
+error: |-
+  Expected values to be strictly equal:
+
+  null !== 17789.25
+
+1..1
+# tests 1
+# pass 0
+# fail 1
+```
+
+此失敗落在既有的 name-reorder assertion；驗證後已還原。最後執行
+`git diff --exit-code -- scripts/lib/derived.mjs` 為 exit code 0、無輸出。

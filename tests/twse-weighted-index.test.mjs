@@ -74,12 +74,20 @@ test('TWSE weighted index parsers handle daily and reordered historical shapes',
   const dailyValue = parseTwseWeightedIndex(daily);
   assert.equal(dailyValue, 46940.49);
 
-  const historical = weightedIndexHistFixture({
+  const historicalNameReordered = weightedIndexHistFixture({
     fields: ['漲跌點數', '收盤指數', '指數', '漲跌(+/-)'],
   });
-  const historicalValue = parseTwseWeightedIndexHist(historical);
-  t.diagnostic(`daily=${dailyValue}; historicalReordered=${historicalValue}`);
-  assert.equal(historicalValue, 17789.25);
+  const historicalNameReorderedValue = parseTwseWeightedIndexHist(historicalNameReordered);
+  assert.equal(historicalNameReorderedValue, 17789.25);
+
+  const historicalCloseReordered = weightedIndexHistFixture({
+    fields: ['指數', '漲跌(+/-)', '收盤指數', '漲跌點數'],
+  });
+  const historicalCloseReorderedValue = parseTwseWeightedIndexHist(historicalCloseReordered);
+  t.diagnostic(
+    `daily=${dailyValue}; historicalNameReordered=${historicalNameReorderedValue}; historicalCloseReordered=${historicalCloseReorderedValue}`,
+  );
+  assert.equal(historicalCloseReorderedValue, 17789.25);
 });
 
 test('TWSE weighted index parsers agree on both available overlapping raw dates', async (t) => {
