@@ -263,6 +263,23 @@ export function isTwseMiIndexTradingDay(payload) {
     && payload.tables[8].data.length > 0;
 }
 
+export function parseTwseWeightedIndex(rows) {
+  if (!Array.isArray(rows)) throw new Error('TWSE weighted index: rows is not an array');
+  const row = rows.find((item) => item?.['指數'] === '發行量加權股價指數');
+  return row ? compactNumber(row['收盤指數']) : null;
+}
+
+export function parseTwseWeightedIndexHist(payload) {
+  const table = requiredLegacyTable(payload, 0, 'MI_INDEX weighted index');
+  if (table.data.length === 0) return null;
+  const indexes = requiredFieldIndexes(table.fields, {
+    name: '指數',
+    close: '收盤指數',
+  }, 'MI_INDEX weighted index');
+  const row = table.data.find((item) => item?.[indexes.name] === '發行量加權股價指數');
+  return row ? compactNumber(row[indexes.close]) : null;
+}
+
 export function parseTwseMiIndexHist(payload) {
   const table = requiredLegacyTable(payload, 8, 'MI_INDEX');
   const indexes = requiredFieldIndexes(table.fields, {
@@ -1073,6 +1090,9 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
   const twseClose = twseCloseOpenApi !== null
     ? twseCloseOpenApi
     : twseCloseHistRaw === null ? null : parseTwseMiIndexHist(twseCloseHistRaw);
+  const twseWeightedIndex = twseIndex !== null
+    ? parseTwseWeightedIndex(twseIndex)
+    : twseCloseHistRaw === null ? null : parseTwseWeightedIndexHist(twseCloseHistRaw);
   const twseMargin = twseMarginOpenApi !== null
     ? twseMarginOpenApi
     : twseMarginHistRaw === null ? null : parseTwseMiMargnHist(twseMarginHistRaw);
@@ -1187,9 +1207,8 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
 
   const marketPath = join(rootDir, 'data', 'derived', 'market.json');
   const market = normalizeMarket(await readExistingJson(marketPath, MARKET_TEMPLATE));
-  if (twseIndex) {
-    const row = twseIndex.find((item) => item?.['指數'] === '發行量加權股價指數');
-    if (row) upsertSeries(market.twse.index, [ymd, compactNumber(row['收盤指數'])]);
+  if (twseIndex !== null || twseCloseHistRaw !== null) {
+    if (twseWeightedIndex !== null) upsertSeries(market.twse.index, [ymd, twseWeightedIndex]);
     else console.warn(`[warn] derived: TWSE weighted index row missing on ${isoDate}`);
   }
   if (tpexIndex) {
