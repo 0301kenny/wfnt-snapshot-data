@@ -150,6 +150,45 @@ export const ENDPOINTS = [
   },
 ];
 
+export const SERIES_ENDPOINTS = [
+  {
+    key: 'fred_dtwexbgs',
+    seriesId: 'DTWEXBGS',
+    sourceDataset: 'fred/DTWEXBGS',
+    url: 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTWEXBGS',
+    accept: 'application/csv,text/csv,text/plain,*/*',
+    maxAttempts: 1,
+    attribution: 'Federal Reserve',
+  },
+  {
+    key: 'fred_dextaus',
+    seriesId: 'DEXTAUS',
+    sourceDataset: 'fred/DEXTAUS',
+    url: 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXTAUS',
+    accept: 'application/csv,text/csv,text/plain,*/*',
+    maxAttempts: 1,
+    attribution: 'Federal Reserve',
+  },
+  {
+    key: 'fred_t10y2y',
+    seriesId: 'T10Y2Y',
+    sourceDataset: 'fred/T10Y2Y',
+    url: 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y2Y',
+    accept: 'application/csv,text/csv,text/plain,*/*',
+    maxAttempts: 1,
+    attribution: 'Federal Reserve Bank of St. Louis',
+  },
+  {
+    key: 'fred_vixcls',
+    seriesId: 'VIXCLS',
+    sourceDataset: 'fred/VIXCLS',
+    url: 'https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS',
+    accept: 'application/csv,text/csv,text/plain,*/*',
+    maxAttempts: 1,
+    attribution: 'CBOE',
+  },
+];
+
 // Backfill-only official historical endpoints. These are intentionally separate from
 // ENDPOINTS so scripts/run.mjs never includes them in the daily pipeline.
 export const BACKFILL_ENDPOINTS = {
@@ -229,6 +268,10 @@ export const BACKFILL_ENDPOINTS = {
 
 export function endpointByKey(key) {
   return ENDPOINTS.find((endpoint) => endpoint.key === key);
+}
+
+export function seriesEndpointByKey(key) {
+  return SERIES_ENDPOINTS.find((endpoint) => endpoint.key === key);
 }
 
 export function validateRows(endpoint, rows) {

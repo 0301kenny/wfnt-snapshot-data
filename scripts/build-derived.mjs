@@ -1,6 +1,12 @@
 import { rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { applyDailyDate, applyMonthlyRevenue, applyQuarterlyFinancials, applyTdccWeek } from './lib/derived.mjs';
+import {
+  applyDailyDate,
+  applyMacroSeries,
+  applyMonthlyRevenue,
+  applyQuarterlyFinancials,
+  applyTdccWeek,
+} from './lib/derived.mjs';
 import { listCsvGzDates, listHtmlMonths, listJsonDates } from './lib/io.mjs';
 
 const DAILY_SOURCES = [
@@ -128,12 +134,15 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     await applyTdccWeek(rootDir, week);
   }
 
+  const macro = await applyMacroSeries(rootDir);
+
   const files = await countFiles(derivedDir);
   return {
     dailyDates: sortedDailyDates.length,
     monthlyMonths: sortedMonthlyMonths.length,
     quarterlySeasons: sortedQuarterlySeasons.length,
     tdccWeeks: weeks.length,
+    macroSeries: macro.series,
     files,
   };
 }
@@ -141,7 +150,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);
