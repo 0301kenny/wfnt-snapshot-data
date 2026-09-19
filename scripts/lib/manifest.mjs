@@ -19,6 +19,10 @@ export function emptyWeeklyDatasetEntry() {
   return { firstWeek: null, latestWeek: null, weeks: 0, ok: false };
 }
 
+export function emptySeriesDatasetEntry() {
+  return { firstObservation: null, lastObservation: null, observations: 0, ok: false };
+}
+
 export function normalizeManifest(input) {
   const manifest = {
     schemaVersion: 1,
@@ -28,9 +32,11 @@ export function normalizeManifest(input) {
     paths: {
       raw: 'data/raw/{source_dataset}/{yyyy}/{date}.json',
       rawTdcc: 'data/raw/tdcc/{yyyy}/{date}.csv.gz',
+      rawFred: 'data/raw/fred/{series_id}.csv',
       symbol: 'data/derived/symbols/{p2}/{id}.json',
       tdcc: 'data/derived/tdcc/{p2}/{id}.json',
       market: 'data/derived/market.json',
+      macro: 'data/derived/macro.json',
     },
     archives: [],
   };
@@ -66,6 +72,16 @@ export function setDatasetSuccess(manifest, key, dates) {
 export function setDatasetError(manifest, key, lastError) {
   const previous = manifest.datasets[key] ?? emptyDatasetEntry();
   manifest.datasets[key] = { ...previous, ok: false, lastError };
+}
+
+export function setSeriesDatasetSuccess(manifest, key, dates) {
+  const sorted = [...dates].sort();
+  manifest.datasets[key] = {
+    firstObservation: sorted[0] ?? null,
+    lastObservation: sorted.at(-1) ?? null,
+    observations: sorted.length,
+    ok: sorted.length > 0,
+  };
 }
 
 export function refreshLatestTradingDate(manifest) {

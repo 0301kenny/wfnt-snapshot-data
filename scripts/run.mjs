@@ -1,17 +1,33 @@
 import { appendFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { ENDPOINTS, dateFromRows, endpointByKey, validateRows, validateTdccCsv } from './endpoints.mjs';
+import {
+  ENDPOINTS,
+  SERIES_ENDPOINTS,
+  dateFromRows,
+  endpointByKey,
+  seriesEndpointByKey,
+  validateRows,
+  validateTdccCsv,
+} from './endpoints.mjs';
 import { daysBetweenIsoDates, parseRocMonth, taipeiIsoDate, yyyyOf } from './lib/date.mjs';
-import { applyDailyDate, applyMonthlyRevenue, applyTdccWeek } from './lib/derived.mjs';
+import {
+  applyDailyDate,
+  applyMacroSeries,
+  applyMonthlyRevenue,
+  applyTdccWeek,
+  parseFredCsv,
+} from './lib/derived.mjs';
 import { sha256Hex } from './lib/hash.mjs';
 import { listCsvGzDates, listJsonDates, readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
 import {
   DATASET_KEYS,
+  emptySeriesDatasetEntry,
   normalizeManifest,
   refreshLatestTradingDate,
   setDatasetError,
   setDatasetSuccess,
+  setSeriesDatasetSuccess,
   stableManifestString,
 } from './lib/manifest.mjs';
 
@@ -31,7 +47,8 @@ function deterministicFetchError(error) {
 
 async function fetchTextWithRetry(endpoint, fetcher) {
   let lastError = 'fetch: failed';
-  for (let attempt = 1; attempt <= RETRIES; attempt += 1) {
+  const maxAttempts = endpoint.maxAttempts ?? RETRIES;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const response = await fetcher(endpoint.url, {
         signal: AbortSignal.timeout(endpoint.timeoutMs ?? DEFAULT_TIMEOUT_MS),
@@ -39,7 +56,7 @@ async function fetchTextWithRetry(endpoint, fetcher) {
       });
       if (!response.ok) {
         lastError = `HTTP ${response.status}`;
-        if (attempt < RETRIES) {
+        if (attempt < maxAttempts) {
           await sleep(250 * 2 ** (attempt - 1));
           continue;
         }
@@ -50,7 +67,7 @@ async function fetchTextWithRetry(endpoint, fetcher) {
         : Buffer.from(await response.text(), 'utf8');
       if (body.length === 0) {
         lastError = 'fetch: empty body';
-        if (attempt < RETRIES) {
+        if (attempt < maxAttempts) {
           await sleep(250 * 2 ** (attempt - 1));
           continue;
         }
@@ -59,7 +76,7 @@ async function fetchTextWithRetry(endpoint, fetcher) {
       return { ok: true, body };
     } catch (error) {
       lastError = deterministicFetchError(error);
-      if (attempt < RETRIES) await sleep(250 * 2 ** (attempt - 1));
+      if (attempt < maxAttempts) await sleep(250 * 2 ** (attempt - 1));
     }
   }
   return { ok: false, error: lastError };
@@ -91,8 +108,10 @@ function parseCli(argv) {
 }
 
 function selectedEndpointKeys(datasetInput) {
-  if (!datasetInput || datasetInput.length === 0) return new Set(ENDPOINTS.map((endpoint) => endpoint.key));
-  const unknown = datasetInput.filter((key) => !endpointByKey(key));
+  if (!datasetInput || datasetInput.length === 0) {
+    return new Set([...ENDPOINTS, ...SERIES_ENDPOINTS].map((endpoint) => endpoint.key));
+  }
+  const unknown = datasetInput.filter((key) => !endpointByKey(key) && !seriesEndpointByKey(key));
   if (unknown.length > 0) throw new Error(`unknown dataset(s): ${unknown.join(',')}`);
   return new Set(datasetInput);
 }
@@ -122,6 +141,15 @@ function normalizeSnapshotManifest(input) {
       ...(input?.datasets?.[key] ?? {}),
     };
   }
+  for (const endpoint of SERIES_ENDPOINTS) {
+    manifest.datasets[endpoint.key] = {
+      ...emptySeriesDatasetEntry(),
+      ...(input?.datasets?.[endpoint.key] ?? {}),
+    };
+    if (manifest.datasets[endpoint.key].lastError === undefined) {
+      delete manifest.datasets[endpoint.key].lastError;
+    }
+  }
   manifest.paths.rawMonthly = 'data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json';
   manifest.paths.fundamentals = 'data/derived/fundamentals/{p2}/{id}.json';
   return manifest;
@@ -137,6 +165,10 @@ function rawTdccPath(rootDir, date) {
 
 function rawMonthlyPath(rootDir, endpoint, month) {
   return join(rootDir, 'data', 'raw', endpoint.sourceDataset, month.slice(0, 4), `${month}.json`);
+}
+
+function rawSeriesPath(rootDir, endpoint) {
+  return join(rootDir, 'data', 'raw', 'fred', `${endpoint.seriesId}.csv`);
 }
 
 async function previousRawHash(rootDir, endpoint, date) {
@@ -242,6 +274,21 @@ async function writeMonthlyRawIfChanged(rootDir, endpoint, month, body, options)
   }
 }
 
+async function writeSeriesRawIfChanged(rootDir, endpoint, body) {
+  const destination = rawSeriesPath(rootDir, endpoint);
+  const bodyHash = sha256Hex(body);
+  try {
+    const currentHash = sha256Hex(await readFile(destination));
+    if (currentHash === bodyHash) return { status: 'same', path: destination };
+    await writeFileEnsured(destination, body);
+    return { status: 'revise', path: destination };
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    await writeFileEnsured(destination, body);
+    return { status: 'write', path: destination };
+  }
+}
+
 async function loadEndpoint(endpoint, fetcher) {
   const fetched = await fetchTextWithRetry(endpoint, fetcher);
   if (!fetched.ok) return fetched;
@@ -255,6 +302,25 @@ async function loadEndpoint(endpoint, fetcher) {
   const schema = validateRows(endpoint, parsed.rows);
   if (!schema.ok) return schema;
   return { ok: true, body: fetched.body, rows: parsed.rows };
+}
+
+async function loadSeriesEndpoint(endpoint, fetcher) {
+  const fetched = await fetchTextWithRetry(endpoint, fetcher);
+  if (!fetched.ok) return fetched;
+  try {
+    const rows = parseFredCsv(fetched.body, endpoint.seriesId);
+    if (rows.length === 0) {
+      return { ok: false, error: `FRED ${endpoint.seriesId}: response has 0 observations` };
+    }
+    return { ok: true, body: fetched.body, rows };
+  } catch (error) {
+    return { ok: false, error: error.message };
+  }
+}
+
+function observationDate(value) {
+  const text = String(value);
+  return `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}`;
 }
 
 function shouldSkipFreshTdcc(manifest, { force, explicitTdcc, today }) {
@@ -291,11 +357,19 @@ function commitMessage(results, changedDates) {
   const tdccDate = changedTdcc.map((result) => result.date).sort().at(-1) ?? null;
   if (revised.length > 0) {
     const reviseDate = [...changedDates].filter(Boolean).sort().at(-1) ?? tdccDate;
-    return `revise: ${reviseDate} [${revised.map((result) => result.key === 'tdcc' ? 'tdcc' : `${result.market}:${result.key.replace(`${result.market}_`, '')}`).join(',')}]`;
+    return `revise: ${reviseDate} [${revised.map((result) => {
+      if (result.key === 'tdcc') return 'tdcc';
+      if (result.seriesId) return result.key;
+      return `${result.market}:${result.key.replace(`${result.market}_`, '')}`;
+    }).join(',')}]`;
   }
   const changedMonthly = results.filter((result) => result.cadence === 'monthly' && ['write', 'forced'].includes(result.status));
   if (!tradingDate && changedMonthly.length > 0) {
     return `snapshot(monthly): ${changedMonthly.map((result) => `${result.key}:${result.month}`).join(',')}`;
+  }
+  const changedSeries = results.filter((result) => result.seriesId && ['write', 'forced'].includes(result.status));
+  if (!tradingDate && changedSeries.length > 0) {
+    return `snapshot(macro): ${changedSeries.map((result) => result.key).join(',')}`;
   }
   if (!tradingDate && tdccDate) return `snapshot(tdcc): ${tdccDate}`;
   if (!tradingDate) return 'snapshot: no-op';
@@ -323,6 +397,7 @@ export async function runSnapshot({
   const oldManifestString = stableManifestString(normalizeSnapshotManifest(await readJsonIfExists(manifestPath, {})));
   const manifest = normalizeSnapshotManifest(JSON.parse(oldManifestString));
   const endpointsToWrite = ENDPOINTS.filter((endpoint) => selected.has(endpoint.key));
+  const seriesEndpointsToWrite = SERIES_ENDPOINTS.filter((endpoint) => selected.has(endpoint.key));
   const dailyEndpointsToWrite = endpointsToWrite.filter((endpoint) => endpoint.market && endpoint.cadence !== 'monthly');
   const monthlyEndpointsToWrite = endpointsToWrite.filter((endpoint) => endpoint.cadence === 'monthly');
   const tdccEndpoint = endpointsToWrite.find((endpoint) => endpoint.key === 'tdcc') ?? null;
@@ -442,6 +517,27 @@ export async function runSnapshot({
     }
   }
 
+  for (const endpoint of seriesEndpointsToWrite) {
+    const loaded = await loadSeriesEndpoint(endpoint, fetcher);
+    if (!loaded.ok) {
+      setDatasetError(manifest, endpoint.key, loaded.error);
+      results.push({ key: endpoint.key, seriesId: endpoint.seriesId, ok: false, error: loaded.error });
+      console.log(`[fail] ${endpoint.key}: ${loaded.error}`);
+      continue;
+    }
+    const dates = loaded.rows.map((row) => observationDate(row[0]));
+    const writeResult = await writeSeriesRawIfChanged(rootDir, endpoint, loaded.body);
+    setSeriesDatasetSuccess(manifest, endpoint.key, dates);
+    results.push({
+      key: endpoint.key,
+      seriesId: endpoint.seriesId,
+      ok: true,
+      status: writeResult.status,
+      date: dates.at(-1),
+    });
+    console.log(`[${writeResult.status}] ${endpoint.key}: ${dates.at(-1)}`);
+  }
+
   const changedDailyDatesForDerived = new Set(
     results
       .filter((result) => result.market && result.cadence !== 'monthly' && ['write', 'revise', 'forced'].includes(result.status))
@@ -478,6 +574,10 @@ export async function runSnapshot({
     } catch (error) {
       console.error(`[error] derived tdcc ${date}: ${error?.stack ?? error}`);
     }
+  }
+  if (seriesEndpointsToWrite.length > 0 && results.some((result) => result.seriesId && result.ok)) {
+    const derived = await applyMacroSeries(rootDir);
+    console.log(`[derived] macro: series=${derived.series} macro=${derived.written ? 'write' : 'same'}`);
   }
 
   refreshLatestTradingDate(manifest);

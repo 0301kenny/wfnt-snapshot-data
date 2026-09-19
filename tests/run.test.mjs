@@ -278,6 +278,10 @@ test('first run writes raw paths and manifest contract with seventeen datasets',
       'tpex_insider_holding',
       'twse_monthly_revenue',
       'tpex_monthly_revenue',
+      'fred_dtwexbgs',
+      'fred_dextaus',
+      'fred_t10y2y',
+      'fred_vixcls',
     ]);
     assert.equal(m.datasets.tpex_3insti.ok, true);
     assert.deepEqual(m.datasets.tdcc, {

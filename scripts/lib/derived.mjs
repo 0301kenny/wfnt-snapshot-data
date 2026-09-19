@@ -1,6 +1,7 @@
 import { readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
+import { SERIES_ENDPOINTS } from '../endpoints.mjs';
 import { parseGregorianDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
 import { readJsonIfExists, writeFileEnsured } from './io.mjs';
 
@@ -9,6 +10,7 @@ export const DEFAULT_TDCC_WINDOW = 64;
 export const DEFAULT_VALUATION_WINDOW = 1300;
 export const DEFAULT_REVENUE_WINDOW = 36;
 export const DEFAULT_QUARTERLY_WINDOW = 24;
+export const MACRO_START_DATE = 20210101;
 export const DERIVED_INPUT_DATASETS = new Set([
   'twse/mi_index',
   'twse/stock_day_all',
@@ -658,6 +660,64 @@ async function writeDerivedJson(path, value) {
   }
   await writeFileEnsured(path, next);
   return true;
+}
+
+export function parseFredCsv(bytes, seriesId) {
+  if (!bytes || bytes.length === 0) throw new Error(`FRED ${seriesId}: empty CSV`);
+  const text = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : String(bytes);
+  const lines = text.split(/\r\n|\n|\r/);
+  const headerIndex = lines.findIndex((line) => line.length > 0);
+  if (headerIndex === -1) throw new Error(`FRED ${seriesId}: CSV header missing`);
+  const header = parseCsvLine(lines[headerIndex]);
+  if (header.length > 0) header[0] = header[0].replace(/^\uFEFF/, '');
+  const dateIndex = header.indexOf('observation_date');
+  const valueIndex = header.indexOf(seriesId);
+  if (dateIndex === -1) throw new Error(`FRED ${seriesId}: missing field observation_date`);
+  if (valueIndex === -1) throw new Error(`FRED ${seriesId}: missing field ${seriesId}`);
+
+  const rows = [];
+  for (let index = headerIndex + 1; index < lines.length; index += 1) {
+    if (!lines[index].trim()) continue;
+    const cells = parseCsvLine(lines[index]);
+    const valueText = String(cells[valueIndex] ?? '').trim();
+    if (valueText === '' || valueText === '.') continue;
+    const date = parseGregorianDate(cells[dateIndex]);
+    if (!date) throw new Error(`FRED ${seriesId}: invalid observation_date at CSV row ${index + 1}`);
+    const value = Number(valueText);
+    if (!Number.isFinite(value)) {
+      throw new Error(`FRED ${seriesId}: non-numeric value at ${date}`);
+    }
+    rows.push([isoToInt(date), value]);
+  }
+  rows.sort((left, right) => left[0] - right[0]);
+  return rows;
+}
+
+export async function applyMacroSeries(rootDir) {
+  const series = {};
+  for (const endpoint of SERIES_ENDPOINTS) {
+    const path = join(rootDir, 'data', 'raw', 'fred', `${endpoint.seriesId}.csv`);
+    let bytes;
+    try {
+      bytes = await readFile(path);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
+    series[endpoint.seriesId] = {
+      attribution: endpoint.attribution,
+      cols: ['d', 'v'],
+      rows: parseFredCsv(bytes, endpoint.seriesId)
+        .filter((row) => row[0] >= MACRO_START_DATE),
+    };
+  }
+  const count = Object.keys(series).length;
+  if (count === 0) return { series: 0, written: false };
+  const written = await writeDerivedJson(
+    join(rootDir, 'data', 'derived', 'macro.json'),
+    { series },
+  );
+  return { series: count, written };
 }
 
 function updatedFromRows(rows) {

@@ -10,7 +10,7 @@ import {
   runBackfill,
 } from '../scripts/backfill.mjs';
 import { buildDerived } from '../scripts/build-derived.mjs';
-import { BACKFILL_ENDPOINTS, ENDPOINTS } from '../scripts/endpoints.mjs';
+import { BACKFILL_ENDPOINTS, ENDPOINTS, SERIES_ENDPOINTS } from '../scripts/endpoints.mjs';
 import {
   DEFAULT_SYMBOL_WINDOW,
   DEFAULT_VALUATION_WINDOW,
@@ -364,6 +364,18 @@ test('backfill endpoints remain separate from the 17-entry snapshot endpoint lis
   assert.match(BACKFILL_ENDPOINTS.tpex_margin_hist.url('20260717'), /date=2026\/07\/17/);
   assert.match(BACKFILL_ENDPOINTS.tpex_pe_hist.url('20260717'), /peQryDate\?date=2026\/07\/17/);
   assert.match(BACKFILL_ENDPOINTS.tpex_sbl_hist.url('20260717'), /margin\/sbl\?date=2026\/07\/17/);
+  assert.deepEqual(SERIES_ENDPOINTS.map((endpoint) => endpoint.key), [
+    'fred_dtwexbgs',
+    'fred_dextaus',
+    'fred_t10y2y',
+    'fred_vixcls',
+  ]);
+  assert.deepEqual(SERIES_ENDPOINTS.map((endpoint) => endpoint.url), [
+    'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTWEXBGS',
+    'https://fred.stlouisfed.org/graph/fredgraph.csv?id=DEXTAUS',
+    'https://fred.stlouisfed.org/graph/fredgraph.csv?id=T10Y2Y',
+    'https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS',
+  ]);
 });
 
 test('securities lending parsers select the borrowing balance and reject response-date drift', () => {
