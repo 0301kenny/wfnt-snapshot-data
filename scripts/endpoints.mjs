@@ -269,6 +269,11 @@ export const BACKFILL_ENDPOINTS = {
     sourceDataset: 'taifex/pcr',
     url: 'https://www.taifex.com.tw/cht/3/pcRatioDown',
   },
+  taifex_foreign_futures: {
+    cadence: 'monthly',
+    sourceDataset: 'taifex/foreign_futures',
+    url: 'https://www.taifex.com.tw/cht/3/futContractsDateDown',
+  },
 };
 
 export function endpointByKey(key) {

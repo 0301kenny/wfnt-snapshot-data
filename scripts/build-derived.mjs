@@ -5,6 +5,7 @@ import {
   applyMacroSeries,
   applyMonthlyRevenue,
   applyQuarterlyFinancials,
+  applyTaifexForeignFuturesMonth,
   applyTaifexPcrMonth,
   applyTdccWeek,
 } from './lib/derived.mjs';
@@ -77,7 +78,7 @@ async function listHtmlSeasons(dir) {
   }
 }
 
-async function listTaifexPcrMonths(dir) {
+async function listTaifexCsvMonths(dir) {
   try {
     const years = await readdir(dir, { withFileTypes: true });
     const months = [];
@@ -127,11 +128,18 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     await applyDailyDate(rootDir, date);
   }
 
-  const taifexPcrMonths = await listTaifexPcrMonths(
+  const taifexPcrMonths = await listTaifexCsvMonths(
     join(rootDir, 'data', 'raw', 'taifex', 'pcr'),
   );
   for (const month of taifexPcrMonths) {
     await applyTaifexPcrMonth(rootDir, month);
+  }
+
+  const taifexForeignFuturesMonths = await listTaifexCsvMonths(
+    join(rootDir, 'data', 'raw', 'taifex', 'foreign_futures'),
+  );
+  for (const month of taifexForeignFuturesMonths) {
+    await applyTaifexForeignFuturesMonth(rootDir, month);
   }
 
   const monthlyMonths = new Set();
@@ -167,6 +175,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
   return {
     dailyDates: sortedDailyDates.length,
     taifexPcrMonths: taifexPcrMonths.length,
+    taifexForeignFuturesMonths: taifexForeignFuturesMonths.length,
     monthlyMonths: sortedMonthlyMonths.length,
     quarterlySeasons: sortedQuarterlySeasons.length,
     tdccWeeks: weeks.length,
@@ -178,7 +187,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);
