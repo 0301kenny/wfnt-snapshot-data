@@ -12,8 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import {
   runVixBackfill,
   vixBackfillOptionsFromArgs,
@@ -27,8 +26,28 @@ import {
 } from '../scripts/lib/derived.mjs';
 
 const silentLogger = { log() {}, warn() {} };
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const OFFICIAL_VIX_DIR = join(REPO_ROOT, 'data/raw/taifex/vix_monthly/2026');
+const OFFICIAL_VIX_FIXTURES = {
+  '2026-06': {
+    bytes: 856,
+    sha256: 'b7fa355126982960b0e50ec38f69cb72a501813632cd76e556fd3e4040c7cbcc',
+    base64: 'peap9qTptMEJrsm2oSiuyS+kwC+s7S+yQKztKQm7T6v8v+++3MV2qmmwyrJ2q/y8xgmmrL1Mq2UxpMDEwaWtp6Gr/LzGDQotLS0tLS0tLQktLS0tLS0tLS0tLS0tLS0tLS0tCS0tLS0tLS0tLS0tLS0tLS0tLS0tCS0tLS0tLS0tLS0tLS0tLS0tLS0NCjIwMjYwNjAxCTEzNDUwMDAwCQkJMzYuNTQJCTM2LjUyDQoyMDI2MDYwMgkxMzQ1MDAwMAkJCTM2LjU2CQkzNi41OA0KMjAyNjA2MDMJMTM0NTAwMDAJCQkzNC45NQkJMzQuOTQNCjIwMjYwNjA0CTEzNDUwMDAwCQkJMzUuMjMJCTM1LjIzDQoyMDI2MDYwNQkxMzQ1MDAwMAkJCTM2LjI4CQkzNi4yNw0KMjAyNjA2MDgJMTM0NTAwMDAJCQk0Mi40MwkJNDIuMjgNCjIwMjYwNjA5CTEzNDUwMDAwCQkJMzguNjYJCTM4LjY1DQoyMDI2MDYxMAkxMzQ1MDAwMAkJCTQzLjkxCQk0My45Mg0KMjAyNjA2MTEJMTM0NTAwMDAJCQk0My41OAkJNDMuNTgNCjIwMjYwNjEyCTEzNDUwMDAwCQkJNDEuODkJCTQxLjk2DQoyMDI2MDYxNQkxMzQ1MDAwMAkJCTM5Ljk3CQkzOS45OA0KMjAyNjA2MTYJMTM0NTAwMDAJCQkzOS4wMgkJMzkuMjINCjIwMjYwNjE3CTEzNDUwMDAwCQkJMzcuMjkJCTM3Ljc4DQoyMDI2MDYxOAkxMzQ1MDAwMAkJCTM3Ljg2CQkzNy44NA0KMjAyNjA2MjIJMTM0NTAwMDAJCQkzNy45NwkJMzcuODMNCjIwMjYwNjIzCTEzNDUwMDAwCQkJMzkuMzYJCTM5LjMyDQoyMDI2MDYyNAkxMzQ1MDAwMAkJCTQwLjg4CQk0MC45Mg0KMjAyNjA2MjUJMTM0NTAwMDAJCQk0MC4zOQkJNDAuMzENCjIwMjYwNjI2CTEzNDUwMDAwCQkJNDQuMjcJCTQ0LjAxDQoyMDI2MDYyOQkxMzQ1MDAwMAkJCTQwLjAxCQkzOS45OA0KMjAyNjA2MzAJMTM0NTAwMDAJCQkzOC41NQkJMzguNTQNCg==',
+  },
+  '2026-07': {
+    bytes: 890,
+    sha256: '44295fcc5903ef01dd6e2c40d92175161f08011891c3c078a74c72cd0393a526',
+    base64: 'peap9qTptMEJrsm2oSiuyS+kwC+s7S+yQKztKQm7T6v8v+++3MV2qmmwyrJ2q/y8xgmmrL1Mq2UxpMDEwaWtp6Gr/LzGDQotLS0tLS0tLQktLS0tLS0tLS0tLS0tLS0tLS0tCS0tLS0tLS0tLS0tLS0tLS0tLS0tCS0tLS0tLS0tLS0tLS0tLS0tLS0NCjIwMjYwNzAxCTEzNDUwMDAwCQkJMzguMTIJCTM4LjE0DQoyMDI2MDcwMgkxMzQ1MDAwMAkJCTM3LjgyCQkzNy43Ng0KMjAyNjA3MDMJMTM0NTAwMDAJCQkzNi42MQkJMzYuNTgNCjIwMjYwNzA2CTEzNDUwMDAwCQkJMzYuODkJCTM2Ljg5DQoyMDI2MDcwNwkxMzQ1MDAwMAkJCTM4LjQ3CQkzOC4yNQ0KMjAyNjA3MDgJMTM0NTAwMDAJCQkzOC4xNQkJMzguMTMNCjIwMjYwNzA5CTEzNDUwMDAwCQkJMzcuMDkJCTM3LjExDQoyMDI2MDcxMwkxMzQ1MDAwMAkJCTM2LjU3CQkzNi42Mg0KMjAyNjA3MTQJMTM0NTAwMDAJCQkzNi42MQkJMzYuNjENCjIwMjYwNzE1CTEzNDUwMDAwCQkJMzQuNDYJCTM0LjQzDQoyMDI2MDcxNgkxMzQ1MDAwMAkJCTM0Ljc0CQkzNC44MQ0KMjAyNjA3MTcJMTM0NTAwMDAJCQkzOC43OQkJMzguODENCjIwMjYwNzIwCTEzNDUwMDAwCQkJMzkuNDkJCTM5LjQ5DQoyMDI2MDcyMQkxMzQ1MDAwMAkJCTM2LjU0CQkzNi41NQ0KMjAyNjA3MjIJMTM0NTAwMDAJCQkzNi4xNAkJMzYuMTQNCjIwMjYwNzIzCTEzNDUwMDAwCQkJMzUuNzQJCTM1Ljc0DQoyMDI2MDcyNAkxMzQ1MDAwMAkJCTM4LjA5CQkzOC4xOQ0KMjAyNjA3MjcJMTM0NTAwMDAJCQkzNy4yNQkJMzcuMjYNCjIwMjYwNzI4CTEzNDUwMDAwCQkJNDAuMzgJCTQwLjQ2DQoyMDI2MDcyOQkxMzQ1MDAwMAkJCTQyLjE0CQk0Mi4xNw0KMjAyNjA3MzAJMTM0NTAwMDAJCQk0NC4zMQkJNDQuMzMNCjIwMjYwNzMxCTEzNDUwMDAwCQkJNDAuNzcJCTQwLjYwDQo=',
+  },
+  '2026-08': {
+    bytes: 856,
+    sha256: '70a46d07f9bd1672d11b82dd27c8321e5228836d2401d3a6f3f001aaf6fed2c8',
+    base64: 'peap9qTptMEJrsm2oSiuyS+kwC+s7S+yQKztKQm7T6v8v+++3MV2qmmwyrJ2q/y8xgmmrL1Mq2UxpMDEwaWtp6Gr/LzGDQotLS0tLS0tLQktLS0tLS0tLS0tLS0tLS0tLS0tCS0tLS0tLS0tLS0tLS0tLS0tLS0tCS0tLS0tLS0tLS0tLS0tLS0tLS0NCjIwMjYwODAzCTEzNDUwMDAwCQkJMzkuNDYJCTM5LjQ3DQoyMDI2MDgwNAkxMzQ1MDAwMAkJCTM4LjkwCQkzOC45MQ0KMjAyNjA4MDUJMTM0NTAwMDAJCQkzNS4zNgkJMzUuMzcNCjIwMjYwODA2CTEzNDUwMDAwCQkJMzYuMDcJCTM2LjA3DQoyMDI2MDgwNwkxMzQ1MDAwMAkJCTM1LjQ2CQkzNS40Nw0KMjAyNjA4MTAJMTM0NTAwMDAJCQkzNS4xOQkJMzUuMTgNCjIwMjYwODExCTEzNDUwMDAwCQkJMzMuNTUJCTMzLjU1DQoyMDI2MDgxMgkxMzQ1MDAwMAkJCTMxLjg4CQkzMS44OA0KMjAyNjA4MTMJMTM0NTAwMDAJCQkzMS4wOQkJMzEuMDgNCjIwMjYwODE0CTEzNDUwMDAwCQkJMzAuMjIJCTMwLjIzDQoyMDI2MDgxNwkxMzQ1MDAwMAkJCTI5LjA3CQkyOS4wOA0KMjAyNjA4MTgJMTM0NTAwMDAJCQkzMC40NQkJMzAuNDYNCjIwMjYwODE5CTEzNDUwMDAwCQkJMzAuODQJCTMwLjgzDQoyMDI2MDgyMAkxMzQ1MDAwMAkJCTMwLjAzCQkzMC4wMg0KMjAyNjA4MjEJMTM0NTAwMDAJCQkyOS4yMQkJMjkuMjMNCjIwMjYwODI0CTEzNDUwMDAwCQkJMjkuODMJCTI5Ljg2DQoyMDI2MDgyNQkxMzQ1MDAwMAkJCTI5LjUxCQkyOS41MA0KMjAyNjA4MjYJMTM0NTAwMDAJCQkyOC42NwkJMjguNjgNCjIwMjYwODI3CTEzNDUwMDAwCQkJMjcuMDkJCTI3LjEwDQoyMDI2MDgyOAkxMzQ1MDAwMAkJCTI0Ljk5CQkyNS4wMA0KMjAyNjA4MzEJMTM0NTAwMDAJCQkyNC40NQkJMjQuNDYNCg==',
+  },
+  '2026-09': {
+    bytes: 618,
+    sha256: 'f4a0910c333c22be03f3663183eccd2a7ad37fef417a9ad59e2cf5a87f07f60b',
+    base64: 'peap9qTptMEJrsm2oSiuyS+kwC+s7S+yQKztKQm7T6v8v+++3MV2qmmwyrJ2q/y8xgmmrL1Mq2UxpMDEwaWtp6Gr/LzGDQotLS0tLS0tLQktLS0tLS0tLS0tLS0tLS0tLS0tCS0tLS0tLS0tLS0tLS0tLS0tLS0tCS0tLS0tLS0tLS0tLS0tLS0tLS0NCjIwMjYwOTAxCTEzNDUwMDAwCQkJMjQuOTEJCTI0LjkyDQoyMDI2MDkwMgkxMzQ1MDAwMAkJCTI2LjEwCQkyNi4wOQ0KMjAyNjA5MDMJMTM0NTAwMDAJCQkyNS42NQkJMjUuNjYNCjIwMjYwOTA0CTEzNDUwMDAwCQkJMjQuMDAJCTI0LjAwDQoyMDI2MDkwNwkxMzQ1MDAwMAkJCTI1LjAwCQkyNS4wMA0KMjAyNjA5MDgJMTM0NTAwMDAJCQkyNS44MAkJMjUuNzkNCjIwMjYwOTA5CTEzNDUwMDAwCQkJMjYuMzUJCTI2LjM0DQoyMDI2MDkxMAkxMzQ1MDAwMAkJCTI2LjI3CQkyNi4yOA0KMjAyNjA5MTEJMTM0NTAwMDAJCQkyNy41MgkJMjcuNTMNCjIwMjYwOTE0CTEzNDUwMDAwCQkJMjcuODMJCTI3LjgzDQoyMDI2MDkxNQkxMzQ1MDAwMAkJCTI3LjI5CQkyNy4yOQ0KMjAyNjA5MTYJMTM0NTAwMDAJCQkyNC40NQkJMjQuNDcNCjIwMjYwOTE3CTEzNDUwMDAwCQkJMjQuMDYJCTI0LjA1DQoyMDI2MDkxOAkxMzQ1MDAwMAkJCTIxLjIyCQkyMS4xOA0K',
+  },
+};
 const VIX_404_BYTES = Buffer.from(
   'PEhUTUwgIHhtbG5zPSdodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hodG1sJyBsYW5nPSd6aC1UVyc+PGhlYWQ+PG1ldGEgaHR0cC1lcXVpdj0nQ29udGVudC1UeXBlJyBjb250ZW50PSd0ZXh0L2h0bWw7IGNoYXJzZXQ9YmlnNScgLz48L2hlYWQ+DQo8dGl0bGU+NDA0PC90aXRsZT4NCjxTVFlMRSB0eXBlPSJ0ZXh0L2NzcyI+DQpib2R5ew0KZm9udC1zaXplOjFlbTsNCiB9DQo8L1NUWUxFPg0KPGJvZHk+DQo8aDE+NDA0PC9oMT4NCrF6wnPE/aq6rbatsbzIrsm1TKprqkGwyKFBIF88YnI+DQq90MJJv++kVaTos3O1sqZerbqttiEhPGJyPg0KPGEgaHJlZj0iaHR0cHM6Ly93d3cudGFpZmV4LmNvbS50dy9jaHQvaW5kZXgiPmh0dHA6Ly93d3cudGFpZmV4LmNvbS50dzwvYT4NCjwvYm9keT4NCjwvaHRtbD4NCg0K',
   'base64',
@@ -54,8 +73,17 @@ function responseFor(bytes, status = 200) {
   };
 }
 
-async function officialVixBytes(monthKey) {
-  return readFile(join(OFFICIAL_VIX_DIR, `${monthKey}.txt`));
+function officialVixBytes(monthKey) {
+  const fixture = OFFICIAL_VIX_FIXTURES[monthKey];
+  assert.ok(fixture, `missing embedded official VIX fixture for ${monthKey}`);
+  const bytes = Buffer.from(fixture.base64, 'base64');
+  assert.equal(bytes.length, fixture.bytes, `${monthKey} fixture byte length drifted`);
+  assert.equal(
+    createHash('sha256').update(bytes).digest('hex'),
+    fixture.sha256,
+    `${monthKey} fixture SHA-256 drifted`,
+  );
+  return bytes;
 }
 
 async function vixFixture(lines) {
@@ -180,6 +208,43 @@ test('HTTP 200 TAIFEX 404 payload retries, fails content validation, and writes 
       { code: 'ENOENT' },
     );
     t.diagnostic(`A4_HTTP=200 A4_BYTES=${VIX_404_BYTES.length} A4_FETCH_CALLS=${calls.length} A4_BACKOFFS=${sleeps.join(',')} A4_RAW_EXISTS=false`);
+  });
+});
+
+test('HTTP 503 retries, fails the month, and writes no raw', async (t) => {
+  await withTempDir(async (root) => {
+    const sleeps = [];
+    const calls = [];
+    let caught;
+    try {
+      await runVixBackfill({
+        rootDir: root,
+        fromMonth: '2026-10',
+        toMonth: '2026-10',
+        delayMs: 0,
+        maxRetries: 2,
+        retryBaseMs: 25,
+        fetchImpl: async (url, options) => {
+          calls.push({ url, options });
+          return responseFor(Buffer.from('temporarily unavailable'), 503);
+        },
+        sleepImpl: async (milliseconds) => { sleeps.push(milliseconds); },
+        applyTaifexVixMonthImpl: async () => assert.fail('HTTP failure must not be applied'),
+        logger: silentLogger,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.match(caught?.message ?? '', /completed with 1 failure/);
+    assert.deepEqual(caught.summary.failures, [{
+      month: '2026-10',
+      error: '2026-10: HTTP 503',
+    }]);
+    assert.equal(calls.length, 3);
+    assert.equal(calls.every(({ options }) => options.method === 'GET'), true);
+    assert.deepEqual(sleeps, [25, 50]);
+    await assert.rejects(readdir(join(root, 'data/raw')), { code: 'ENOENT' });
+    t.diagnostic(`R001_DERIVED_HTTP=503 FETCH_CALLS=${calls.length} BACKOFFS=${sleeps.join(',')} RAW_EXISTS=false`);
   });
 });
 

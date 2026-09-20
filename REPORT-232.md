@@ -218,3 +218,115 @@ EXIT_CODE=0
 ```
 
 開工前既有的 `REPORT-070.md`、`REPORT-189.md`、`REPORT-192.md`、`REPORT-194.md` 仍為未追蹤檔，未修改或刪除。
+
+## Attempt 2
+
+- Status: **READY_FOR_REVIEW**
+- Start HEAD: `7742b224378f984aa819b1768e6c6bc6aeb47066`
+- Network: 未使用真實網路；fetch 全部由測試注入。
+- Commit: 未 commit，改動留在 working tree。
+
+### O-001 — 正例 fixture 不再依賴 `data/`
+
+`tests/taifex-vix.test.mjs` 移除 `REPO_ROOT`／`OFFICIAL_VIX_DIR` 與從 `data/raw/taifex/vix_monthly/2026` 讀檔的路徑，改為內嵌四份官方正例的 base64。每次取用 fixture 都斷言 byte length 與 SHA-256：
+
+```text
+2026-06  856 bytes  b7fa355126982960b0e50ec38f69cb72a501813632cd76e556fd3e4040c7cbcc
+2026-07  890 bytes  44295fcc5903ef01dd6e2c40d92175161f08011891c3c078a74c72cd0393a526
+2026-08  856 bytes  70a46d07f9bd1672d11b82dd27c8321e5228836d2401d3a6f3f001aaf6fed2c8
+2026-09  618 bytes  f4a0910c333c22be03f3663183eccd2a7ad37fef417a9ad59e2cf5a87f07f60b
+TOTAL    3220 bytes
+```
+
+內嵌 bytes 已逐檔與 `evidence/202606.bin`～`202609.bin` 及既有受保護 raw 比對，四檔皆 byte-equal。聚焦實跑：
+
+```text
+$ rtk node --test tests/taifex-vix.test.mjs
+ok 1 - TAIFEX VIX parser skips the separator, selects column 3, sorts, and matches all official fixtures
+# A2_COUNTS=21/22/21/14 A2_SEPARATOR=SKIPPED A2_20260731=40.77 A2_20260601=36.54 A2_20260918=21.22 A2_SORT=ASC
+...
+1..10
+# tests 10
+# pass 10
+# fail 0
+# duration_ms 213.857094
+EXIT_CODE=0
+```
+
+### R-001-derived — HTTP 503 retry、月份失敗、零 raw
+
+新增獨立測試，注入 `status: 503`、`ok: false` 的 response，設定 `maxRetries: 2`。斷言三次 fetch 均為 GET、兩次退避為 25/50 ms、最終 summary 將 `2026-10` 記為 `HTTP 503` failure、derived apply 不得執行，且整個 `data/raw` 目錄不存在。
+
+```text
+ok 4 - HTTP 503 retries, fails the month, and writes no raw
+# R001_DERIVED_HTTP=503 FETCH_CALLS=3 BACKOFFS=25,50 RAW_EXISTS=false
+```
+
+保留 `scripts/lib/taifex-monthly-backfill.mjs` 的 `if (!response.ok) throw new Error(...)`，也未改 `requestBodyForMonth` 的兩條參數驗證；Attempt 2 沒有修改任何 production code。
+
+### A11 — 無 `data/` repo 複本
+
+執行方式：
+
+```text
+$ rtk rsync -a --exclude=data/ --exclude=.git/ ./ /tmp/wfnt-ticket-232-a11.c9uH6m/
+A11_DATA_DIR_ABSENT=true
+$ cd /tmp/wfnt-ticket-232-a11.c9uH6m
+$ rtk node --test tests/
+```
+
+本票 VIX 測試結果：#108～#117 共 10 項全部 `ok`，含正例 parser、HTTP 200/404、HTTP 503、動態月份、`.txt`/no `.csv`、write-on-change、derived 與 rebuild；無任何 VIX 紅項。
+
+完整失敗清單（僅以下三項）：
+
+```text
+not ok 15 - every raw historical namespace on disk is registered as a backfill endpoint
+error: ENOENT: no such file or directory, scandir '<a11-copy>/data/raw/twse'
+
+not ok 23 - TWSE weighted index parsers agree on both available overlapping raw dates
+error: ENOENT: no such file or directory, open '<a11-copy>/data/raw/twse/mi_index/2026/2026-08-14.json'
+
+not ok 24 - merged TWSE weighted index raw dates match the margin date oracle
+error: ENOENT: no such file or directory, scandir '<a11-copy>/data/raw/twse/mi_index'
+```
+
+完整計數：
+
+```text
+1..146
+# tests 146
+# suites 0
+# pass 143
+# fail 3
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 3846.99306
+EXIT_CODE=1
+```
+
+上述三項皆是票面明列、因排除整個 `data/` 而產生的既有依賴；剩餘紅項不含 VIX 測試，A11 對本票新增 VIX 測試為 PASS。
+
+### 完整環境 `node --test tests/`
+
+```text
+$ rtk node --test tests/
+1..146
+# tests 146
+# suites 0
+# pass 146
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6497.194013
+EXIT_CODE=0
+```
+
+### removed_capabilities
+
+```yaml
+removed_capabilities: []
+```
+
+Attempt 2 只改測試 fixture 的承載方式並增加非 2xx 覆蓋；未移除或放寬任何 production 能力、驗證、endpoint、raw/derived 行為或既有斷言。
