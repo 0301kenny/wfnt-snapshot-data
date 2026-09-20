@@ -152,30 +152,81 @@ test('TICKET-233 A4 keeps calendar month-end for historical foreign-futures requ
   });
 });
 
-test('TICKET-233 A5 fails before fetch when current-month PCR raw is missing or has no rows', async (t) => {
-  await withTempDir(async (root) => {
-    let requests = 0;
-    await assert.rejects(
-      runCurrentForeign(root, async () => {
-        requests += 1;
-        return responseFor(SEPTEMBER_FOREIGN);
-      }),
-      /PCR raw is required but missing/,
-    );
-    assert.equal(requests, 0);
+const PCR_DEPENDENCY_FAILURES = [
+  {
+    name: 'missing file',
+    diagnostic: 'MISSING',
+    expectedError: /PCR raw is required but missing/,
+  },
+  {
+    name: 'parse failure',
+    diagnostic: 'PARSE_FAILURE',
+    bytes: Buffer.from('2026/09/18,1,1,not-a-number,1,1,100,\r\n'),
+    expectedError: /PCR raw is invalid: TAIFEX PCR: non-numeric volume ratio/,
+  },
+  {
+    name: 'zero rows for the month',
+    diagnostic: 'ZERO_ROWS',
+    bytes: Buffer.from('<html>no rows</html>'),
+    expectedError: /PCR raw has 0 data rows for the month/,
+  },
+];
 
-    await writeMonthlyRaw(root, 'taifex/pcr', '2026-09', Buffer.from('<html>no rows</html>'));
-    await assert.rejects(
-      runCurrentForeign(root, async () => {
-        requests += 1;
-        return responseFor(SEPTEMBER_FOREIGN);
-      }),
-      /PCR raw has 0 data rows for the month/,
-    );
-    assert.equal(requests, 0);
-    t.diagnostic('A5_MISSING=FAILED A5_ZERO_ROWS=FAILED A5_REQUESTS=0');
+for (const dependencyFailure of PCR_DEPENDENCY_FAILURES) {
+  test(`TICKET-233 A5' records current-month PCR ${dependencyFailure.name} as a failure after historical months`, async (t) => {
+    await withTempDir(async (root) => {
+      if (dependencyFailure.bytes) {
+        await writeMonthlyRaw(root, 'taifex/pcr', '2026-09', dependencyFailure.bytes);
+      }
+      const requests = [];
+      let caught;
+      try {
+        await runForeignFuturesBackfill({
+          rootDir: root,
+          fromMonth: '2026-06',
+          toMonth: '2026-09',
+          now: SUNDAY_NOW,
+          delayMs: 0,
+          maxRetries: 0,
+          fetchImpl: async (_url, options) => {
+            const query = Object.fromEntries(new URLSearchParams(options.body));
+            requests.push(query);
+            return responseFor(foreignFixture([query.queryStartDate]));
+          },
+          sleepImpl: async () => {},
+          logger: silentLogger,
+          applyTaifexForeignFuturesMonthImpl: async () => ({ market: false }),
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      assert.match(caught?.message ?? '', /completed with 1 failure/);
+      assert.equal(caught.summary.months, 4);
+      assert.equal(caught.summary.requests, 3);
+      assert.equal(caught.summary.rawWritten, 3);
+      assert.equal(caught.summary.rows, 3);
+      assert.equal(caught.summary.failures.length, 1);
+      assert.equal(caught.summary.failures[0].month, '2026-09');
+      assert.match(caught.summary.failures[0].error, dependencyFailure.expectedError);
+      assert.deepEqual(
+        requests.map(({ queryStartDate, queryEndDate }) => [queryStartDate, queryEndDate]),
+        [
+          ['2026/06/01', '2026/06/30'],
+          ['2026/07/01', '2026/07/31'],
+          ['2026/08/01', '2026/08/31'],
+        ],
+      );
+      assert.equal(requests.some(({ queryEndDate }) => (
+        queryEndDate === '2026/09/20' || queryEndDate === '2026/09/30'
+      )), false);
+      for (const monthKey of ['2026-06', '2026-07', '2026-08']) {
+        await readFile(join(root, 'data', 'raw', 'taifex', 'foreign_futures', '2026', `${monthKey}.csv`));
+      }
+      t.diagnostic(`A5_${dependencyFailure.diagnostic}=FAILED A5_HISTORICAL_REQUESTS=${requests.length} A5_CURRENT_REQUESTS=0 A5_FALLBACK_REQUESTS=0 A5_FAILURES=${JSON.stringify(caught.summary.failures)}`);
+    });
   });
-});
+}
 
 test('TICKET-233 A6 refreshes existing current-month PCR and foreign-futures raw', async (t) => {
   await withTempDir(async (root) => {

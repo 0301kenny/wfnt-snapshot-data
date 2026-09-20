@@ -88,10 +88,6 @@ export async function runForeignFuturesBackfill({
   const effectiveFromMonth = fromMonth ?? defaults.fromMonth;
   const effectiveToMonth = toMonth ?? defaults.toMonth;
   const currentMonth = taipeiIsoDate(today).slice(0, 7);
-  const includesCurrentMonth = effectiveFromMonth <= currentMonth && currentMonth <= effectiveToMonth;
-  const currentMonthQueryEndDate = includesCurrentMonth
-    ? await pcrMonthQueryEndDate(rootDir, currentMonth)
-    : undefined;
 
   return runTaifexMonthlyBackfill({
     ...options,
@@ -101,10 +97,15 @@ export async function runForeignFuturesBackfill({
     endpoint: BACKFILL_ENDPOINTS.taifex_foreign_futures,
     label: 'TAIFEX foreign futures',
     logPrefix: 'backfill-foreign-futures',
-    requestBodyForMonth: (monthKey) => calendarMonthRequestBody(monthKey, {
-      commodityId: 'TXF',
-      ...(monthKey === currentMonth ? { queryEndDate: currentMonthQueryEndDate } : {}),
-    }),
+    requestBodyForMonth: async (monthKey) => {
+      const queryEndDate = monthKey === currentMonth
+        ? await pcrMonthQueryEndDate(rootDir, currentMonth)
+        : undefined;
+      return calendarMonthRequestBody(monthKey, {
+        commodityId: 'TXF',
+        ...(queryEndDate ? { queryEndDate } : {}),
+      });
+    },
     refreshExistingRawForMonth: (monthKey) => monthKey === currentMonth,
     parseRows: parseTaifexForeignFuturesCsv,
     requireHeader: true,

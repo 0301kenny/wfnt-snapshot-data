@@ -129,7 +129,7 @@ async function fetchTaifexMonth(endpoint, monthKey, {
   logger,
   onRequest,
 }) {
-  const body = requestBodyForMonth?.(monthKey);
+  const body = await requestBodyForMonth?.(monthKey);
   const url = typeof endpoint.url === 'function' ? endpoint.url(monthKey) : endpoint.url;
   let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {

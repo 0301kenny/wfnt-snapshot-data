@@ -212,3 +212,107 @@ REPORT-233.md
 ```
 
 沒有移除 capability；歷史 checkpoint、VIX 全 refresh、HTTP 非 2xx 快速失敗、內容合法性驗證、retry/backoff、write-on-change 均保留。
+
+## Attempt 2
+
+- Status: `READY_FOR_REVIEW`
+- Base HEAD: `ce212d4`
+- Scope: 只修正 Orchestrator O-001；未改用月底或今天作後備，未更動 `if (!response.ok) throw`。
+- Network / data / commit: 未使用真實網路，未修改 `data/**`，未 commit。
+
+### O-001 修正
+
+把當月 PCR query-end 解析從 monthly runner 呼叫前，延後到 runner 執行當月份、建立 request body 時。共用 runner 現在會等待同步或非同步的 `requestBodyForMonth`；因此 PCR 缺檔、解析失敗或該月零資料列的錯誤，都由既有的逐月 `try/catch` 記入 `summary.failures`。歷史月份先照常完成，整個範圍結束後才由既有機制拋出帶完整 `summary` 的錯誤。
+
+PCR 依賴失敗發生在實際 request 與 request 計數之前；當月不會送出請求，更不會用月底或今天猜測終點。既有 HTTP 非 2xx 快速失敗判斷未改。
+
+### A5' PASS — 當月失敗，歷史月照跑
+
+命令：
+
+```text
+rtk node --test tests/taifex-current-month.test.mjs
+```
+
+實跑輸出：
+
+```text
+ok 4 - TICKET-233 A5' records current-month PCR missing file as a failure after historical months
+# A5_MISSING=FAILED A5_HISTORICAL_REQUESTS=3 A5_CURRENT_REQUESTS=0 A5_FALLBACK_REQUESTS=0 A5_FAILURES=[{"month":"2026-09","error":"TAIFEX foreign futures 2026-09: PCR raw is required but missing"}]
+ok 5 - TICKET-233 A5' records current-month PCR parse failure as a failure after historical months
+# A5_PARSE_FAILURE=FAILED A5_HISTORICAL_REQUESTS=3 A5_CURRENT_REQUESTS=0 A5_FALLBACK_REQUESTS=0 A5_FAILURES=[{"month":"2026-09","error":"TAIFEX foreign futures 2026-09: PCR raw is invalid: TAIFEX PCR: non-numeric volume ratio at 2026-09-18"}]
+ok 6 - TICKET-233 A5' records current-month PCR zero rows for the month as a failure after historical months
+# A5_ZERO_ROWS=FAILED A5_HISTORICAL_REQUESTS=3 A5_CURRENT_REQUESTS=0 A5_FALLBACK_REQUESTS=0 A5_FAILURES=[{"month":"2026-09","error":"TAIFEX foreign futures 2026-09: PCR raw has 0 data rows for the month"}]
+1..10
+# tests 10
+# pass 10
+# fail 0
+```
+
+三個案例都以注入 fetcher 跑 `2026-06..2026-09`，並精確斷言歷史 request 為：
+
+```text
+2026/06/01..2026/06/30
+2026/07/01..2026/07/31
+2026/08/01..2026/08/31
+```
+
+三個歷史 raw 均成功產生；`2026-09` 各自出現在 `summary.failures`，最後整體拋錯。`A5_CURRENT_REQUESTS=0` 與 `A5_FALLBACK_REQUESTS=0` 證明沒有任何 request 使用 `2026/09/20` 或 `2026/09/30` 作後備。
+
+### A1' PASS — 全套測試
+
+命令：
+
+```text
+rtk node --test tests/
+```
+
+實跑輸出（尾段）：
+
+```text
+1..156
+# tests 156
+# suites 0
+# pass 156
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6242.451721
+```
+
+總數 156，大於 a1 的 154，且 fail = 0。
+
+### A9' PASS — 受保護測試零 diff
+
+命令與輸出：
+
+```text
+$ rtk git diff --stat -- tests/taifex-vix.test.mjs tests/taifex-pcr.test.mjs
+(無輸出)
+```
+
+另以兩檔合跑確認：
+
+```text
+1..19
+# tests 19
+# pass 19
+# fail 0
+```
+
+### a1 測試調整說明
+
+只有 `tests/taifex-current-month.test.mjs` 的 a1 A5 測試因行為 contract 改變而調整：
+
+1. a1 原測試使用只有當月的範圍，預期 runner 啟動前整次 fail-fast 且總 request 為 0；O-001 明令改為月份層級 failure，因此這個 invocation-level 預期不再正確。
+2. 原本一個 A5 測試覆蓋「缺檔／零資料列」兩種形狀；本輪改成三個 A5' 測試，補上「解析失敗」，每個都跑含三個歷史月與當月的範圍，並鎖定歷史成功、當月 failure、範圍結束後非零、無日期後備。
+3. a1 的 A2、A3、A4、A6、A7、A8 與 default-range 測試不需調整；`tests/taifex-foreign-futures.test.mjs`、`tests/taifex-pcr.test.mjs`、`tests/taifex-vix.test.mjs` 本輪皆未修改。
+
+### removed_capabilities
+
+```json
+[]
+```
+
+沒有移除 capability；歷史 checkpoint、當月 refresh、PCR 交易日終點、無後備猜測、HTTP 非 2xx 快速失敗、內容驗證、retry/backoff、write-on-change 與範圍結束後的 failure summary 均保留。
