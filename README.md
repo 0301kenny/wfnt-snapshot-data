@@ -208,29 +208,39 @@ data/derived/macro.json
 
 ### 總經與情緒序列（2026-09 新增）
 
-三組不走日更管線的 backfill-only 資料源，raw 與 derived 路徑如下：
+四組不走日更管線的 backfill-only 資料源，raw 與 derived 路徑如下：
 
 ```text
 data/raw/fred/{SERIES_ID}.csv                        整條序列覆寫式，無日期分層
 data/raw/taifex/pcr/{yyyy}/{yyyy-mm}.csv             月檔，官方 Big5 bytes 原樣
 data/raw/taifex/foreign_futures/{yyyy}/{yyyy-mm}.csv 月檔，官方 Big5 bytes 原樣
-data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     手動停損落檔，非管線產生
+data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     月檔，官方 Big5 tab-separated bytes 原樣
 ```
 
 - **FRED 四序列**（`DTWEXBGS`／`DEXTAUS`／`T10Y2Y`／`VIXCLS`）走 `SERIES_ENDPOINTS`，
   是第三個 endpoint registry：無 `market`、無 anchor、URL 不吃日期。
   derived 落**獨立的 `data/derived/macro.json`**（整條序列形態，與 `market.json` 的逐日 upsert 不同），
   日期下限 `20210101`，每條序列帶 `attribution`（`VIXCLS` 為 `CBOE`，消費端展示必須標註）。
-- **TAIFEX PCR** 與 **外資期貨**共用 `scripts/lib/taifex-monthly-backfill.mjs`
+- **TAIFEX PCR**、**外資期貨**與 **VIXTWN** 三者共用 `scripts/lib/taifex-monthly-backfill.mjs`
   （一請求一個月、退避重試、write-on-change），derived upsert 進 `market.json` 的
-  `taifex.pcr`（`["d","vol","oi"]`）與 `taifex.fut`（`["d","net"]`）。
-- **兩個 TAIFEX 端點的合法性判準不是 HTTP status**：超限或逾期時回 HTTP 200 的錯誤頁。
-  共用模組以「解析出的資料列 > 0」為底線，另以 `requireHeader` 選項控制是否加驗
-  首行為 `日期,`（外資期貨要、PCR 不要；**預設 fail-closed**）。
+  `taifex.pcr`（`["d","vol","oi"]`）、`taifex.fut`（`["d","net"]`）與 `taifex.vix`（`["d","vix"]`）。
+  共用模組以選項參數化 request method、raw 副檔名、header 前綴與「既有 raw 是否 checkpoint」；
+  **預設維持 POST + `.csv` + `日期,` + checkpoint**，VIXTWN 是唯一走 GET + `.txt` + 每次 refresh 的。
+- **三個 TAIFEX 端點的合法性判準都不是 HTTP status**：超限或逾期時回 HTTP 200 的錯誤頁
+  （VIXTWN 逾期月份回 HTTP 200 但導向 `404.htm`，**且該頁 bytes 會漂——2026-09-18 是 763、09-20 已是 402**，
+  所以連 bytes 長度都不能當判準）。
+  共用模組以「解析出的資料列 > 0」為底線，另以 `requireHeader` 與 `headerPrefix` 控制是否加驗首行
+  （外資期貨 `日期,`、VIXTWN `交易日期`、PCR 不驗；**預設 fail-closed**）。
 - **外資期貨的查詢終點不得落在未來**，故預設 `toMonth` 停在上個月，
   資料會落後最多 31 天（待修）。PCR 無此限制。
-- `taifex/vix_monthly` 是 2026-09-12 的手動停損落檔（上游只保留 4 個月、過期永久刪除），
-  **不由任何端點管轄，不要覆寫**。
+- **VIXTWN 上游只保留「前 3 個月 + 當月」，過期永久刪除。**
+  `scripts/backfill-vix.mjs` 預設範圍由台北時區當月往回推 3 個月計算（不吃參數即可跑），
+  請求間隔 ≥1500 ms（無間隔連抓會全部連線失敗）。
+  2026-06～2026-09 四檔原為 2026-09-12 手動停損落檔，
+  **已驗證腳本重抓結果與它們 byte-level 完全相同**。
+  **⚠️ 腳本不等於排程**：`BACKFILL_ENDPOINTS` 不進日常管線，CI 產出的 `data/` 是 7 天就刪的 artifact，
+  真正的自動化綁尚未做的 R2 sync，**在那之前仍需每月初手動跑一次**
+  （WFNT_app `BACKLOG.md` `F-167`）。
 
 `{p2}` 是代號前 2 字元原樣,例如 `2330` -> `23`,`00400A` -> `00`。Symbols、TDCC 與 fundamentals derived 都排除純數字 6 碼代號 (`/^\d{6}$/`),其餘代號保留,包含 4 碼股票、特別股、ETF/ETN 等。Raw 不過濾。
 
