@@ -8,6 +8,7 @@ import './monthly-backfill.test.mjs';
 import './quarterly-backfill.test.mjs';
 import './twse-weighted-index.test.mjs';
 import './fred.test.mjs';
+import './taifex-pcr.test.mjs';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
