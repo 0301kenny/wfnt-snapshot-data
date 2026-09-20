@@ -15,6 +15,7 @@ import {
   parseTaifexForeignFuturesCsv,
   stableDerivedString,
 } from '../scripts/lib/derived.mjs';
+import { runTaifexMonthlyBackfill } from '../scripts/lib/taifex-monthly-backfill.mjs';
 
 const silentLogger = { log() {}, warn() {} };
 const BIG5_HEADER = Buffer.from(
@@ -300,6 +301,45 @@ test('TAIFEX monthly header policy accepts headerless PCR rows but rejects heade
       { code: 'ENOENT' },
     );
     t.diagnostic('R001_PCR_HEADERLESS=ACCEPTED R001_FOREIGN_HEADERLESS=REJECTED R001_FOREIGN_RAW_EXISTS=false');
+  });
+});
+
+test('TAIFEX shared monthly runner requires the CSV header when requireHeader is omitted', async (t) => {
+  await withTempDir(async (root) => {
+    const headerless = futuresFixture(
+      [{ date: '2026/08/31', net: -82515 }],
+      { header: false },
+    );
+    let caught;
+    try {
+      await runTaifexMonthlyBackfill({
+        rootDir: root,
+        fromMonth: '2026-08',
+        toMonth: '2026-08',
+        delayMs: 0,
+        maxRetries: 0,
+        endpoint: {
+          url: 'https://www.taifex.com.tw/cht/3/futContractsDateDown',
+          sourceDataset: 'taifex/foreign_futures',
+        },
+        label: 'TAIFEX default header policy',
+        logPrefix: 'default-header-policy-test',
+        requestBodyForMonth: () => '',
+        parseRows: parseTaifexForeignFuturesCsv,
+        applyMonthImpl: async () => ({ market: false }),
+        fetchImpl: async () => responseFor(headerless),
+        sleepImpl: async () => {},
+        logger: silentLogger,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.match(caught?.summary?.failures?.[0]?.error ?? '', /first line is not a CSV header/);
+    await assert.rejects(
+      readFile(join(root, 'data/raw/taifex/foreign_futures/2026/2026-08.csv')),
+      { code: 'ENOENT' },
+    );
+    t.diagnostic('R003_REQUIRE_HEADER_OMITTED=FAIL_CLOSED R003_RAW_EXISTS=false');
   });
 });
 

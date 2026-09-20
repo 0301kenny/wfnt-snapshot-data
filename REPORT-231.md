@@ -3,7 +3,7 @@
 Status: **READY_FOR_REVIEW**  
 Branch: `ticket-231`  
 Base HEAD: `3ff1e31c2b53ac62a080f257f780c4c3cd12cb9a`  
-Final test count: **135 pass / 0 fail** (baseline: 123 pass / 0 fail; attempt 1: 133 pass / 0 fail)
+Final test count: **136 pass / 0 fail** (baseline: 123; attempt 1: 133; attempt 2: 135)
 
 No real network request was made. No command ran `build-derived.mjs` against the real `data/` tree. No `data/**` file, including `data/raw/taifex/vix_monthly/**`, was edited. No commit was created.
 
@@ -291,3 +291,95 @@ removed_capabilities: []
 - Foreign-futures validation loses nothing: it still requires `日期,` plus at least one parsed data row and still refuses invalid raw before write.
 - R-002 changes tests only; runtime default-range behavior is unchanged and is now mechanically covered through the runner.
 - No endpoint, CLI flag, raw path, parser field, derived series, daily-pipeline behavior, or AGENTS.md allowlist entry was removed.
+
+## Attempt 3 — R-003 fail-closed default
+
+R-003 (P2) was accepted: although both existing adapters explicitly select their own policy, the shared runner's attempt-2 `requireHeader = false` default was unsafe for a future third consumer.
+
+### R-003 — PASS: omitted `requireHeader` now requires the header
+
+Fix:
+
+- Changed only the shared runner default from `requireHeader = false` to `requireHeader = true`.
+- Kept both existing adapters unchanged: PCR still explicitly passes `false`; foreign futures still explicitly passes `true`.
+- Added a direct shared-runner test that omits `requireHeader`, supplies parseable headerless foreign-futures rows, and requires final failure with no raw write.
+
+Actual focused output:
+
+```text
+$ rtk node --test tests/taifex-foreign-futures.test.mjs
+# Subtest: TAIFEX shared monthly runner requires the CSV header when requireHeader is omitted
+ok 7 - TAIFEX shared monthly runner requires the CSV header when requireHeader is omitted
+# R003_REQUIRE_HEADER_OMITTED=FAIL_CLOSED R003_RAW_EXISTS=false
+```
+
+Focused suite summary:
+
+```text
+1..13
+# tests 13
+# suites 0
+# pass 13
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 250.16059
+exit_code=0
+```
+
+The unchanged PCR adapter and suite still retain the original headerless-row behavior through explicit `requireHeader: false`:
+
+```text
+$ rtk node --test tests/taifex-pcr.test.mjs
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 154.286262
+exit_code=0
+```
+
+Required PCR test diff-stat remains empty (exit 0):
+
+```text
+$ rtk proxy git diff --stat -- tests/taifex-pcr.test.mjs
+```
+
+### Attempt 3 full regression — PASS
+
+```text
+$ rtk node --test tests/
+1..136
+# tests 136
+# suites 0
+# pass 136
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6114.572314
+exit_code=0
+```
+
+`136 > 135`, satisfying the attempt-3 delta requirement.
+
+### Attempt 3 files changed
+
+- `scripts/lib/taifex-monthly-backfill.mjs` — changed the shared `requireHeader` default to fail-closed `true`.
+- `tests/taifex-foreign-futures.test.mjs` — added the direct shared-runner omitted-option regression test.
+- `REPORT-231.md` — appended attempt-3 findings, execution evidence, final count, and capability declaration.
+
+### Attempt 3 `removed_capabilities`
+
+```yaml
+removed_capabilities: []
+```
+
+- Existing PCR and foreign-futures behavior is unchanged because both adapters already pass explicit values.
+- The only default behavior change affects future or direct consumers that omit the option: they now fail closed instead of accepting headerless bytes.
+- No endpoint, raw path, parser, derived output, CLI option, AGENTS.md rule, or generated data was removed or changed.

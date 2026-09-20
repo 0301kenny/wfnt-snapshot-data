@@ -164,7 +164,7 @@ export async function runTaifexMonthlyBackfill({
   logPrefix,
   requestBodyForMonth,
   parseRows,
-  requireHeader = false,
+  requireHeader = true,
   applyMonthImpl,
 } = {}) {
   rootDir = resolve(rootDir);
