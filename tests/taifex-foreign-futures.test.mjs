@@ -89,6 +89,21 @@ async function writeForeignRaw(root, monthKey, bytes = JULY_DESCENDING) {
   return path;
 }
 
+async function writeCurrentPcrDependency(root, monthKey) {
+  const path = join(
+    root,
+    'data',
+    'raw',
+    'taifex',
+    'pcr',
+    monthKey.slice(0, 4),
+    `${monthKey}.csv`,
+  );
+  const date = `${monthKey.replace('-', '/')}/01`;
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, Buffer.from(`${date},1,1,100,1,1,100,\r\n`));
+}
+
 async function readMarket(root) {
   return JSON.parse(await readFile(join(root, 'data', 'derived', 'market.json'), 'utf8'));
 }
@@ -377,8 +392,8 @@ test('foreign futures default range follows the injected clock instead of a fixe
   const september = foreignFuturesDefaultRange(() => new Date('2026-09-20T00:00:00Z'));
   const october = foreignFuturesDefaultRange(() => new Date('2026-10-20T00:00:00Z'));
   const taipeiOctoberBoundary = foreignFuturesDefaultRange(() => new Date('2026-09-30T16:30:00Z'));
-  assert.deepEqual(september, { fromMonth: '2023-10', toMonth: '2026-08' });
-  assert.deepEqual(october, { fromMonth: '2023-11', toMonth: '2026-09' });
+  assert.deepEqual(september, { fromMonth: '2023-10', toMonth: '2026-09' });
+  assert.deepEqual(october, { fromMonth: '2023-11', toMonth: '2026-10' });
   assert.deepEqual(taipeiOctoberBoundary, october);
   assert.notEqual(september.fromMonth, october.fromMonth);
   t.diagnostic(`A5_CLOCK_2026_09=${JSON.stringify(september)} A5_CLOCK_2026_10=${JSON.stringify(october)}`);
@@ -388,6 +403,8 @@ test('foreign futures runner uses injected now for its omitted from and to defau
   await withTempDir(async (root) => {
     async function requestedMonths(rootDir, now) {
       const months = [];
+      const currentMonth = now.slice(0, 7);
+      await writeCurrentPcrDependency(rootDir, currentMonth);
       const summary = await runForeignFuturesBackfill({
         rootDir,
         now: () => new Date(now),
@@ -413,10 +430,10 @@ test('foreign futures runner uses injected now for its omitted from and to defau
       join(root, 'october'),
       '2026-10-20T00:00:00Z',
     );
-    assert.equal(september.length, 35);
-    assert.equal(october.length, 35);
-    assert.deepEqual([september[0], september.at(-1)], ['2023/10', '2026/08']);
-    assert.deepEqual([october[0], october.at(-1)], ['2023/11', '2026/09']);
+    assert.equal(september.length, 36);
+    assert.equal(october.length, 36);
+    assert.deepEqual([september[0], september.at(-1)], ['2023/10', '2026/09']);
+    assert.deepEqual([october[0], october.at(-1)], ['2023/11', '2026/10']);
     assert.notDeepEqual(september, october);
     t.diagnostic(`R002_RUNNER_2026_09=${september[0]}..${september.at(-1)} R002_RUNNER_2026_10=${october[0]}..${october.at(-1)} REQUESTS=${september.length}/${october.length}`);
   });

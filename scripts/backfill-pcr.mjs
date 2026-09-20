@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BACKFILL_ENDPOINTS } from './endpoints.mjs';
 import { parseNumericFlag } from './lib/cli.mjs';
+import { taipeiIsoDate } from './lib/date.mjs';
 import { applyTaifexPcrMonth, parseTaifexPcrCsv } from './lib/derived.mjs';
 import {
   calendarMonthRequestBody,
@@ -12,16 +13,26 @@ import {
   runTaifexMonthlyBackfill,
 } from './lib/taifex-monthly-backfill.mjs';
 
+function currentTaipeiMonth(now) {
+  const value = typeof now === 'function' ? now() : now;
+  const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  if (!Number.isFinite(date.getTime())) throw new Error(`now must return a valid Date, got: ${value}`);
+  return taipeiIsoDate(date).slice(0, 7);
+}
+
 export async function runPcrBackfill({
+  now = () => new Date(),
   applyTaifexPcrMonthImpl = applyTaifexPcrMonth,
   ...options
 } = {}) {
+  const currentMonth = currentTaipeiMonth(now);
   return runTaifexMonthlyBackfill({
     ...options,
     endpoint: BACKFILL_ENDPOINTS.taifex_pcr,
     label: 'TAIFEX PCR',
     logPrefix: 'backfill-pcr',
     requestBodyForMonth: calendarMonthRequestBody,
+    refreshExistingRawForMonth: (monthKey) => monthKey === currentMonth,
     parseRows: parseTaifexPcrCsv,
     requireHeader: false,
     applyMonthImpl: applyTaifexPcrMonthImpl,

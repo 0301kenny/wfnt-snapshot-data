@@ -1,6 +1,7 @@
 // TAIFEX foreign-investor TX futures net-open-interest monthly backfill.
 // Official Big5 CSV bytes remain authoritative; parsing only validates before write.
 
+import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BACKFILL_ENDPOINTS } from './endpoints.mjs';
@@ -8,12 +9,14 @@ import { parseNumericFlag } from './lib/cli.mjs';
 import { taipeiIsoDate } from './lib/date.mjs';
 import {
   applyTaifexForeignFuturesMonth,
+  parseTaifexPcrCsv,
   parseTaifexForeignFuturesCsv,
 } from './lib/derived.mjs';
 import {
   calendarMonthRequestBody,
   parseLongArgs,
   runTaifexMonthlyBackfill,
+  taifexMonthlyRawPath,
 } from './lib/taifex-monthly-backfill.mjs';
 
 function clockDate(now) {
@@ -33,30 +36,77 @@ export function foreignFuturesDefaultRange(now = () => new Date()) {
   const [year, month] = taipeiIsoDate(today).split('-').map(Number);
   return {
     // The upstream window is approximately three years. Start with the first
-    // complete month after that boundary so a moving partial month cannot fail
-    // the whole request with an HTTP-200 DateTime error page.
+    // complete month after that boundary.
     fromMonth: utcMonthKey(year - 3, month),
-    // Avoid asking for future dates in the current, incomplete month.
-    toMonth: utcMonthKey(year, month - 2),
+    toMonth: utcMonthKey(year, month - 1),
   };
 }
 
+export async function pcrMonthQueryEndDate(rootDir, monthKey) {
+  const path = taifexMonthlyRawPath(
+    resolve(rootDir),
+    BACKFILL_ENDPOINTS.taifex_pcr.sourceDataset,
+    monthKey,
+  );
+  let bytes;
+  try {
+    bytes = await readFile(path);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error(`TAIFEX foreign futures ${monthKey}: PCR raw is required but missing`);
+    }
+    throw error;
+  }
+
+  let rows;
+  try {
+    rows = parseTaifexPcrCsv(bytes);
+  } catch (error) {
+    throw new Error(`TAIFEX foreign futures ${monthKey}: PCR raw is invalid: ${error.message}`);
+  }
+  const monthNumber = Number(monthKey.replace('-', ''));
+  const dates = rows
+    .map((row) => row[0])
+    .filter((date) => Math.trunc(date / 100) === monthNumber);
+  if (dates.length === 0) {
+    throw new Error(`TAIFEX foreign futures ${monthKey}: PCR raw has 0 data rows for the month`);
+  }
+  const lastDate = String(Math.max(...dates));
+  return `${lastDate.slice(0, 4)}/${lastDate.slice(4, 6)}/${lastDate.slice(6, 8)}`;
+}
+
 export async function runForeignFuturesBackfill({
+  rootDir = process.cwd(),
   fromMonth,
   toMonth,
   now = () => new Date(),
   applyTaifexForeignFuturesMonthImpl = applyTaifexForeignFuturesMonth,
   ...options
 } = {}) {
-  const defaults = foreignFuturesDefaultRange(now);
+  const today = clockDate(now);
+  const defaults = foreignFuturesDefaultRange(today);
+  const effectiveFromMonth = fromMonth ?? defaults.fromMonth;
+  const effectiveToMonth = toMonth ?? defaults.toMonth;
+  const currentMonth = taipeiIsoDate(today).slice(0, 7);
+
   return runTaifexMonthlyBackfill({
     ...options,
-    fromMonth: fromMonth ?? defaults.fromMonth,
-    toMonth: toMonth ?? defaults.toMonth,
+    rootDir,
+    fromMonth: effectiveFromMonth,
+    toMonth: effectiveToMonth,
     endpoint: BACKFILL_ENDPOINTS.taifex_foreign_futures,
     label: 'TAIFEX foreign futures',
     logPrefix: 'backfill-foreign-futures',
-    requestBodyForMonth: (monthKey) => calendarMonthRequestBody(monthKey, { commodityId: 'TXF' }),
+    requestBodyForMonth: async (monthKey) => {
+      const queryEndDate = monthKey === currentMonth
+        ? await pcrMonthQueryEndDate(rootDir, currentMonth)
+        : undefined;
+      return calendarMonthRequestBody(monthKey, {
+        commodityId: 'TXF',
+        ...(queryEndDate ? { queryEndDate } : {}),
+      });
+    },
+    refreshExistingRawForMonth: (monthKey) => monthKey === currentMonth,
     parseRows: parseTaifexForeignFuturesCsv,
     requireHeader: true,
     applyMonthImpl: applyTaifexForeignFuturesMonthImpl,
