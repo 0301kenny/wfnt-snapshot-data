@@ -181,6 +181,7 @@ export async function runTaifexMonthlyBackfill({
   requestMethod = 'POST',
   rawExtension = 'csv',
   refreshExistingRaw = false,
+  refreshExistingRawForMonth,
   parseRows,
   requireHeader = true,
   headerPrefix = '日期,',
@@ -220,6 +221,9 @@ export async function runTaifexMonthlyBackfill({
   if (typeof refreshExistingRaw !== 'boolean') {
     throw new Error(`refreshExistingRaw must be a boolean, got: ${refreshExistingRaw}`);
   }
+  if (refreshExistingRawForMonth !== undefined && typeof refreshExistingRawForMonth !== 'function') {
+    throw new Error('refreshExistingRawForMonth must be a function when provided');
+  }
   if (typeof parseRows !== 'function') throw new Error('parseRows must be a function');
   if (typeof applyMonthImpl !== 'function') throw new Error('applyMonthImpl must be a function');
 
@@ -241,7 +245,11 @@ export async function runTaifexMonthlyBackfill({
     const requestsBeforeMonth = summary.requests;
     try {
       let payload;
-      if (!refreshExistingRaw) {
+      const refreshForMonth = refreshExistingRawForMonth?.(monthKey);
+      if (refreshForMonth !== undefined && typeof refreshForMonth !== 'boolean') {
+        throw new Error(`refreshExistingRawForMonth must return a boolean for ${monthKey}`);
+      }
+      if (!refreshExistingRaw && refreshForMonth !== true) {
         try {
           payload = await readValidTaifexMonthlyRaw(path, validation);
         } catch (error) {

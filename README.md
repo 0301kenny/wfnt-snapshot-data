@@ -225,14 +225,15 @@ data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     月檔，官方 Big5 tab-se
   （一請求一個月、退避重試、write-on-change），derived upsert 進 `market.json` 的
   `taifex.pcr`（`["d","vol","oi"]`）、`taifex.fut`（`["d","net"]`）與 `taifex.vix`（`["d","vix"]`）。
   共用模組以選項參數化 request method、raw 副檔名、header 前綴與「既有 raw 是否 checkpoint」；
-  **預設維持 POST + `.csv` + `日期,` + checkpoint**，VIXTWN 是唯一走 GET + `.txt` + 每次 refresh 的。
+  **預設維持 POST + `.csv` + `日期,` + checkpoint**。VIXTWN 走 GET + `.txt` 且全範圍 refresh，
+  PCR 與外資期貨則只 refresh 台北時區的當月檔，歷史月份仍 checkpoint。
 - **三個 TAIFEX 端點的合法性判準都不是 HTTP status**：超限或逾期時回 HTTP 200 的錯誤頁
   （VIXTWN 逾期月份回 HTTP 200 但導向 `404.htm`，**且該頁 bytes 會漂——2026-09-18 是 763、09-20 已是 402**，
   所以連 bytes 長度都不能當判準）。
   共用模組以「解析出的資料列 > 0」為底線，另以 `requireHeader` 與 `headerPrefix` 控制是否加驗首行
   （外資期貨 `日期,`、VIXTWN `交易日期`、PCR 不驗；**預設 fail-closed**）。
-- **外資期貨的查詢終點不得落在未來**，故預設 `toMonth` 停在上個月，
-  資料會落後最多 31 天（待修）。PCR 無此限制。
+- **外資期貨當月查詢終點必須是已有資料的交易日**，因此取同月 PCR raw 的最後交易日；
+  PCR raw 缺失或無當月資料時明確失敗，不以月底或今天猜測。歷史月份仍用月底，預設 `toMonth` 可含當月。
 - **VIXTWN 上游只保留「前 3 個月 + 當月」，過期永久刪除。**
   `scripts/backfill-vix.mjs` 預設範圍由台北時區當月往回推 3 個月計算（不吃參數即可跑），
   請求間隔 ≥1500 ms（無間隔連抓會全部連線失敗）。
