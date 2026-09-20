@@ -4,6 +4,7 @@ import { gunzipSync } from 'node:zlib';
 import { SERIES_ENDPOINTS } from '../endpoints.mjs';
 import { parseGregorianDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
 import { readJsonIfExists, writeFileEnsured } from './io.mjs';
+import { decodeTaifexBig5Csv } from './taifex-monthly-backfill.mjs';
 
 export const DEFAULT_SYMBOL_WINDOW = 1300;
 export const DEFAULT_TDCC_WINDOW = 64;
@@ -37,6 +38,7 @@ const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
 const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
 const TAIFEX_PCR_COLS = ['d', 'vol', 'oi'];
+const TAIFEX_FUT_COLS = ['d', 'net'];
 export const QUARTERLY_COLS = ['q', 'gm', 'om', 'nm'];
 export const FUNDAMENTAL_SERIES = Object.freeze({
   valuation: Object.freeze({
@@ -109,6 +111,7 @@ const MARKET_TEMPLATE = {
   },
   taifex: {
     pcr: { cols: TAIFEX_PCR_COLS, rows: [] },
+    fut: { cols: TAIFEX_FUT_COLS, rows: [] },
   },
 };
 
@@ -245,16 +248,8 @@ export function validateMopsMonthlyRevenueHtml(bytes, rocMonth) {
   return rows;
 }
 
-function decodeTaifexPcrCsv(bytes) {
-  try {
-    return new TextDecoder('big5', { fatal: true }).decode(bytes);
-  } catch {
-    throw new Error('TAIFEX PCR: invalid big5 CSV');
-  }
-}
-
 export function parseTaifexPcrCsv(bytes) {
-  const text = decodeTaifexPcrCsv(bytes);
+  const text = decodeTaifexBig5Csv(bytes, 'TAIFEX PCR');
   const rows = [];
   const lines = text.split(/\r\n|\n|\r/);
   for (let index = 0; index < lines.length; index += 1) {
@@ -283,6 +278,31 @@ export function parseTaifexPcrCsv(bytes) {
       return number;
     });
     rows.push([isoToInt(date), values[2], values[5]]);
+  }
+  rows.sort((left, right) => left[0] - right[0]);
+  return rows;
+}
+
+export function parseTaifexForeignFuturesCsv(bytes) {
+  const text = decodeTaifexBig5Csv(bytes, 'TAIFEX foreign futures');
+  const rows = [];
+  const lines = text.split(/\r\n|\n|\r/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].replace(/^\uFEFF/, '');
+    if (!/^\d{4}\/\d{2}\/\d{2},/.test(line)) continue;
+    const cells = parseCsvLine(line);
+    if (cells.length < 15) {
+      throw new Error(`TAIFEX foreign futures: CSV row ${index + 1} has ${cells.length} columns, expected at least 15`);
+    }
+    const date = parseGregorianDate(cells[0]);
+    if (!date) throw new Error(`TAIFEX foreign futures: invalid date at CSV row ${index + 1}`);
+    if (!String(cells[2] ?? '').includes('外資')) continue;
+    const netText = String(cells[13] ?? '').trim();
+    const net = netText === '' ? Number.NaN : Number(netText);
+    if (!Number.isFinite(net)) {
+      throw new Error(`TAIFEX foreign futures: non-numeric net open interest at ${date}`);
+    }
+    rows.push([isoToInt(date), net]);
   }
   rows.sort((left, right) => left[0] - right[0]);
   return rows;
@@ -1083,6 +1103,7 @@ function normalizeMarket(input) {
     },
     taifex: {
       pcr: { cols: MARKET_TEMPLATE.taifex.pcr.cols, rows: input?.taifex?.pcr?.rows ?? [] },
+      fut: { cols: MARKET_TEMPLATE.taifex.fut.cols, rows: input?.taifex?.fut?.rows ?? [] },
     },
   };
 }
@@ -1099,6 +1120,7 @@ function refreshMarketUpdated(market) {
     ...market.tpex.margin.rows,
     ...market.tpex.insti.rows,
     ...market.taifex.pcr.rows,
+    ...market.taifex.fut.rows,
   ].map((row) => row[0]).sort((a, b) => a - b);
   market.updated = dates.length ? intToIso(dates.at(-1)) : null;
 }
@@ -1122,6 +1144,32 @@ export async function applyTaifexPcrMonth(rootDir, monthKey) {
   const marketPath = join(rootDir, 'data', 'derived', 'market.json');
   const market = normalizeMarket(await readExistingJson(marketPath, MARKET_TEMPLATE));
   for (const row of rows) upsertSeries(market.taifex.pcr, row);
+  refreshMarketUpdated(market);
+  return {
+    rows: rows.length,
+    market: await writeDerivedJson(marketPath, market),
+  };
+}
+
+export async function applyTaifexForeignFuturesMonth(rootDir, monthKey) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(monthKey ?? ''))) {
+    throw new Error(`TAIFEX foreign futures: invalid month key ${monthKey}`);
+  }
+  const path = join(
+    rootDir,
+    'data',
+    'raw',
+    'taifex',
+    'foreign_futures',
+    monthKey.slice(0, 4),
+    `${monthKey}.csv`,
+  );
+  const rows = parseTaifexForeignFuturesCsv(await readFile(path));
+  if (rows.length === 0) throw new Error('TAIFEX foreign futures: response has 0 data rows');
+
+  const marketPath = join(rootDir, 'data', 'derived', 'market.json');
+  const market = normalizeMarket(await readExistingJson(marketPath, MARKET_TEMPLATE));
+  for (const row of rows) upsertSeries(market.taifex.fut, row);
   refreshMarketUpdated(market);
   return {
     rows: rows.length,
