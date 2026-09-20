@@ -36,6 +36,7 @@ const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 
 const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
 const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
+const TAIFEX_PCR_COLS = ['d', 'vol', 'oi'];
 export const QUARTERLY_COLS = ['q', 'gm', 'om', 'nm'];
 export const FUNDAMENTAL_SERIES = Object.freeze({
   valuation: Object.freeze({
@@ -105,6 +106,9 @@ const MARKET_TEMPLATE = {
     index: { cols: ['d', 'o', 'h', 'l', 'c'], rows: [] },
     margin: { cols: ['d', 'mb', 'ms'], rows: [] },
     insti: { cols: ['d', 'fi'], rows: [] },
+  },
+  taifex: {
+    pcr: { cols: TAIFEX_PCR_COLS, rows: [] },
   },
 };
 
@@ -238,6 +242,49 @@ export function validateMopsMonthlyRevenueHtml(bytes, rocMonth) {
   }
   const rows = parseMopsMonthlyRevenue(bytes, rocMonth);
   if (rows.length === 0) throw new Error('MOPS monthly revenue: response has 0 data rows');
+  return rows;
+}
+
+function decodeTaifexPcrCsv(bytes) {
+  try {
+    return new TextDecoder('big5', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error('TAIFEX PCR: invalid big5 CSV');
+  }
+}
+
+export function parseTaifexPcrCsv(bytes) {
+  const text = decodeTaifexPcrCsv(bytes);
+  const rows = [];
+  const lines = text.split(/\r\n|\n|\r/);
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index].replace(/^\uFEFF/, '');
+    if (!/^\d{4}\/\d{2}\/\d{2},/.test(line)) continue;
+    const cells = parseCsvLine(line);
+    if (cells.length < 7) {
+      throw new Error(`TAIFEX PCR: CSV row ${index + 1} has ${cells.length} columns, expected at least 7`);
+    }
+    const date = parseGregorianDate(cells[0]);
+    if (!date) throw new Error(`TAIFEX PCR: invalid date at CSV row ${index + 1}`);
+    const numericFields = [
+      'put volume',
+      'call volume',
+      'volume ratio',
+      'put open interest',
+      'call open interest',
+      'open-interest ratio',
+    ];
+    const values = cells.slice(1, 7).map((cell, valueIndex) => {
+      const value = String(cell ?? '').trim();
+      const number = value === '' ? Number.NaN : Number(value);
+      if (!Number.isFinite(number)) {
+        throw new Error(`TAIFEX PCR: non-numeric ${numericFields[valueIndex]} at ${date}`);
+      }
+      return number;
+    });
+    rows.push([isoToInt(date), values[2], values[5]]);
+  }
+  rows.sort((left, right) => left[0] - right[0]);
   return rows;
 }
 
@@ -1034,6 +1081,9 @@ function normalizeMarket(input) {
       margin: { cols: MARKET_TEMPLATE.tpex.margin.cols, rows: input?.tpex?.margin?.rows ?? [] },
       insti: { cols: MARKET_TEMPLATE.tpex.insti.cols, rows: input?.tpex?.insti?.rows ?? [] },
     },
+    taifex: {
+      pcr: { cols: MARKET_TEMPLATE.taifex.pcr.cols, rows: input?.taifex?.pcr?.rows ?? [] },
+    },
   };
 }
 
@@ -1048,8 +1098,35 @@ function refreshMarketUpdated(market) {
     ...market.tpex.index.rows,
     ...market.tpex.margin.rows,
     ...market.tpex.insti.rows,
+    ...market.taifex.pcr.rows,
   ].map((row) => row[0]).sort((a, b) => a - b);
   market.updated = dates.length ? intToIso(dates.at(-1)) : null;
+}
+
+export async function applyTaifexPcrMonth(rootDir, monthKey) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(monthKey ?? ''))) {
+    throw new Error(`TAIFEX PCR: invalid month key ${monthKey}`);
+  }
+  const path = join(
+    rootDir,
+    'data',
+    'raw',
+    'taifex',
+    'pcr',
+    monthKey.slice(0, 4),
+    `${monthKey}.csv`,
+  );
+  const rows = parseTaifexPcrCsv(await readFile(path));
+  if (rows.length === 0) throw new Error('TAIFEX PCR: response has 0 data rows');
+
+  const marketPath = join(rootDir, 'data', 'derived', 'market.json');
+  const market = normalizeMarket(await readExistingJson(marketPath, MARKET_TEMPLATE));
+  for (const row of rows) upsertSeries(market.taifex.pcr, row);
+  refreshMarketUpdated(market);
+  return {
+    rows: rows.length,
+    market: await writeDerivedJson(marketPath, market),
+  };
 }
 
 function mapBy(rows, key) {

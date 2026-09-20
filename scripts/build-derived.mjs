@@ -5,6 +5,7 @@ import {
   applyMacroSeries,
   applyMonthlyRevenue,
   applyQuarterlyFinancials,
+  applyTaifexPcrMonth,
   applyTdccWeek,
 } from './lib/derived.mjs';
 import { listCsvGzDates, listHtmlMonths, listJsonDates } from './lib/io.mjs';
@@ -76,6 +77,25 @@ async function listHtmlSeasons(dir) {
   }
 }
 
+async function listTaifexPcrMonths(dir) {
+  try {
+    const years = await readdir(dir, { withFileTypes: true });
+    const months = [];
+    for (const year of years) {
+      if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
+      const files = await readdir(join(dir, year.name), { withFileTypes: true });
+      for (const file of files) {
+        const match = file.isFile() && /^(\d{4}-(?:0[1-9]|1[0-2]))\.csv$/.exec(file.name);
+        if (match && match[1].startsWith(`${year.name}-`)) months.push(match[1]);
+      }
+    }
+    return months.sort();
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
 async function countFiles(dir) {
   try {
     let count = 0;
@@ -105,6 +125,13 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
   const sortedDailyDates = [...dailyDates].sort();
   for (const date of sortedDailyDates) {
     await applyDailyDate(rootDir, date);
+  }
+
+  const taifexPcrMonths = await listTaifexPcrMonths(
+    join(rootDir, 'data', 'raw', 'taifex', 'pcr'),
+  );
+  for (const month of taifexPcrMonths) {
+    await applyTaifexPcrMonth(rootDir, month);
   }
 
   const monthlyMonths = new Set();
@@ -139,6 +166,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
   const files = await countFiles(derivedDir);
   return {
     dailyDates: sortedDailyDates.length,
+    taifexPcrMonths: taifexPcrMonths.length,
     monthlyMonths: sortedMonthlyMonths.length,
     quarterlySeasons: sortedQuarterlySeasons.length,
     tdccWeeks: weeks.length,
@@ -150,7 +178,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);

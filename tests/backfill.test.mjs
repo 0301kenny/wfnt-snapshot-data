@@ -334,6 +334,7 @@ test('backfill endpoints remain separate from the 17-entry snapshot endpoint lis
     'tpex_margin_hist',
     'tpex_pe_hist',
     'tpex_sbl_hist',
+    'taifex_pcr',
   ]);
   assert.equal(BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.sourceDataset, 'twse/monthly_revenue_hist');
   assert.equal(BACKFILL_ENDPOINTS.tpex_monthly_revenue_hist.sourceDataset, 'tpex/monthly_revenue_hist');
@@ -364,6 +365,8 @@ test('backfill endpoints remain separate from the 17-entry snapshot endpoint lis
   assert.match(BACKFILL_ENDPOINTS.tpex_margin_hist.url('20260717'), /date=2026\/07\/17/);
   assert.match(BACKFILL_ENDPOINTS.tpex_pe_hist.url('20260717'), /peQryDate\?date=2026\/07\/17/);
   assert.match(BACKFILL_ENDPOINTS.tpex_sbl_hist.url('20260717'), /margin\/sbl\?date=2026\/07\/17/);
+  assert.equal(BACKFILL_ENDPOINTS.taifex_pcr.sourceDataset, 'taifex/pcr');
+  assert.equal(BACKFILL_ENDPOINTS.taifex_pcr.url, 'https://www.taifex.com.tw/cht/3/pcRatioDown');
   assert.deepEqual(SERIES_ENDPOINTS.map((endpoint) => endpoint.key), [
     'fred_dtwexbgs',
     'fred_dextaus',

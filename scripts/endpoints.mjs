@@ -264,6 +264,11 @@ export const BACKFILL_ENDPOINTS = {
     sourceDataset: 'tpex/sbl_hist',
     url: (ymd) => `https://www.tpex.org.tw/www/zh-tw/margin/sbl?date=${ymd.slice(0, 4)}/${ymd.slice(4, 6)}/${ymd.slice(6, 8)}&response=json`,
   },
+  taifex_pcr: {
+    cadence: 'monthly',
+    sourceDataset: 'taifex/pcr',
+    url: 'https://www.taifex.com.tw/cht/3/pcRatioDown',
+  },
 };
 
 export function endpointByKey(key) {
