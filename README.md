@@ -203,7 +203,34 @@ data/derived/symbols/{p2}/{id}.json
 data/derived/tdcc/{p2}/{id}.json
 data/derived/fundamentals/{p2}/{id}.json
 data/derived/market.json
+data/derived/macro.json
 ```
+
+### 總經與情緒序列（2026-09 新增）
+
+三組不走日更管線的 backfill-only 資料源，raw 與 derived 路徑如下：
+
+```text
+data/raw/fred/{SERIES_ID}.csv                        整條序列覆寫式，無日期分層
+data/raw/taifex/pcr/{yyyy}/{yyyy-mm}.csv             月檔，官方 Big5 bytes 原樣
+data/raw/taifex/foreign_futures/{yyyy}/{yyyy-mm}.csv 月檔，官方 Big5 bytes 原樣
+data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     手動停損落檔，非管線產生
+```
+
+- **FRED 四序列**（`DTWEXBGS`／`DEXTAUS`／`T10Y2Y`／`VIXCLS`）走 `SERIES_ENDPOINTS`，
+  是第三個 endpoint registry：無 `market`、無 anchor、URL 不吃日期。
+  derived 落**獨立的 `data/derived/macro.json`**（整條序列形態，與 `market.json` 的逐日 upsert 不同），
+  日期下限 `20210101`，每條序列帶 `attribution`（`VIXCLS` 為 `CBOE`，消費端展示必須標註）。
+- **TAIFEX PCR** 與 **外資期貨**共用 `scripts/lib/taifex-monthly-backfill.mjs`
+  （一請求一個月、退避重試、write-on-change），derived upsert 進 `market.json` 的
+  `taifex.pcr`（`["d","vol","oi"]`）與 `taifex.fut`（`["d","net"]`）。
+- **兩個 TAIFEX 端點的合法性判準不是 HTTP status**：超限或逾期時回 HTTP 200 的錯誤頁。
+  共用模組以「解析出的資料列 > 0」為底線，另以 `requireHeader` 選項控制是否加驗
+  首行為 `日期,`（外資期貨要、PCR 不要；**預設 fail-closed**）。
+- **外資期貨的查詢終點不得落在未來**，故預設 `toMonth` 停在上個月，
+  資料會落後最多 31 天（待修）。PCR 無此限制。
+- `taifex/vix_monthly` 是 2026-09-12 的手動停損落檔（上游只保留 4 個月、過期永久刪除），
+  **不由任何端點管轄，不要覆寫**。
 
 `{p2}` 是代號前 2 字元原樣,例如 `2330` -> `23`,`00400A` -> `00`。Symbols、TDCC 與 fundamentals derived 都排除純數字 6 碼代號 (`/^\d{6}$/`),其餘代號保留,包含 4 碼股票、特別股、ETF/ETN 等。Raw 不過濾。
 
