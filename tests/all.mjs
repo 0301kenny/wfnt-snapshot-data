@@ -10,6 +10,7 @@ import './twse-weighted-index.test.mjs';
 import './fred.test.mjs';
 import './taifex-pcr.test.mjs';
 import './taifex-foreign-futures.test.mjs';
+import './taifex-vix.test.mjs';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

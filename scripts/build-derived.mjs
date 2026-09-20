@@ -7,6 +7,7 @@ import {
   applyQuarterlyFinancials,
   applyTaifexForeignFuturesMonth,
   applyTaifexPcrMonth,
+  applyTaifexVixMonth,
   applyTdccWeek,
 } from './lib/derived.mjs';
 import { listCsvGzDates, listHtmlMonths, listJsonDates } from './lib/io.mjs';
@@ -78,7 +79,7 @@ async function listHtmlSeasons(dir) {
   }
 }
 
-async function listTaifexCsvMonths(dir) {
+async function listTaifexMonths(dir, extension) {
   try {
     const years = await readdir(dir, { withFileTypes: true });
     const months = [];
@@ -86,7 +87,8 @@ async function listTaifexCsvMonths(dir) {
       if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
       const files = await readdir(join(dir, year.name), { withFileTypes: true });
       for (const file of files) {
-        const match = file.isFile() && /^(\d{4}-(?:0[1-9]|1[0-2]))\.csv$/.exec(file.name);
+        const match = file.isFile()
+          && new RegExp(`^(\\d{4}-(?:0[1-9]|1[0-2]))\\.${extension}$`).exec(file.name);
         if (match && match[1].startsWith(`${year.name}-`)) months.push(match[1]);
       }
     }
@@ -128,18 +130,28 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     await applyDailyDate(rootDir, date);
   }
 
-  const taifexPcrMonths = await listTaifexCsvMonths(
+  const taifexPcrMonths = await listTaifexMonths(
     join(rootDir, 'data', 'raw', 'taifex', 'pcr'),
+    'csv',
   );
   for (const month of taifexPcrMonths) {
     await applyTaifexPcrMonth(rootDir, month);
   }
 
-  const taifexForeignFuturesMonths = await listTaifexCsvMonths(
+  const taifexForeignFuturesMonths = await listTaifexMonths(
     join(rootDir, 'data', 'raw', 'taifex', 'foreign_futures'),
+    'csv',
   );
   for (const month of taifexForeignFuturesMonths) {
     await applyTaifexForeignFuturesMonth(rootDir, month);
+  }
+
+  const taifexVixMonths = await listTaifexMonths(
+    join(rootDir, 'data', 'raw', 'taifex', 'vix_monthly'),
+    'txt',
+  );
+  for (const month of taifexVixMonths) {
+    await applyTaifexVixMonth(rootDir, month);
   }
 
   const monthlyMonths = new Set();
@@ -176,6 +188,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     dailyDates: sortedDailyDates.length,
     taifexPcrMonths: taifexPcrMonths.length,
     taifexForeignFuturesMonths: taifexForeignFuturesMonths.length,
+    taifexVixMonths: taifexVixMonths.length,
     monthlyMonths: sortedMonthlyMonths.length,
     quarterlySeasons: sortedQuarterlySeasons.length,
     tdccWeeks: weeks.length,
@@ -187,7 +200,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);

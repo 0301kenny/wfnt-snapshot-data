@@ -336,6 +336,7 @@ test('backfill endpoints remain separate from the 17-entry snapshot endpoint lis
     'tpex_sbl_hist',
     'taifex_pcr',
     'taifex_foreign_futures',
+    'taifex_vix_monthly',
   ]);
   assert.equal(BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.sourceDataset, 'twse/monthly_revenue_hist');
   assert.equal(BACKFILL_ENDPOINTS.tpex_monthly_revenue_hist.sourceDataset, 'tpex/monthly_revenue_hist');
@@ -371,6 +372,12 @@ test('backfill endpoints remain separate from the 17-entry snapshot endpoint lis
   assert.equal(BACKFILL_ENDPOINTS.taifex_foreign_futures.cadence, 'monthly');
   assert.equal(BACKFILL_ENDPOINTS.taifex_foreign_futures.sourceDataset, 'taifex/foreign_futures');
   assert.equal(BACKFILL_ENDPOINTS.taifex_foreign_futures.url, 'https://www.taifex.com.tw/cht/3/futContractsDateDown');
+  assert.equal(BACKFILL_ENDPOINTS.taifex_vix_monthly.cadence, 'monthly');
+  assert.equal(BACKFILL_ENDPOINTS.taifex_vix_monthly.sourceDataset, 'taifex/vix_monthly');
+  assert.equal(
+    BACKFILL_ENDPOINTS.taifex_vix_monthly.url('2026-09'),
+    'https://www.taifex.com.tw/file/taifex/Dailydownload/vix/log2data/202609new.txt',
+  );
   assert.deepEqual(SERIES_ENDPOINTS.map((endpoint) => endpoint.key), [
     'fred_dtwexbgs',
     'fred_dextaus',
