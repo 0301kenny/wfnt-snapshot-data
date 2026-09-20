@@ -39,6 +39,7 @@ const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
 const TAIFEX_PCR_COLS = ['d', 'vol', 'oi'];
 const TAIFEX_FUT_COLS = ['d', 'net'];
+const TAIFEX_VIX_COLS = ['d', 'vix'];
 export const QUARTERLY_COLS = ['q', 'gm', 'om', 'nm'];
 export const FUNDAMENTAL_SERIES = Object.freeze({
   valuation: Object.freeze({
@@ -112,6 +113,7 @@ const MARKET_TEMPLATE = {
   taifex: {
     pcr: { cols: TAIFEX_PCR_COLS, rows: [] },
     fut: { cols: TAIFEX_FUT_COLS, rows: [] },
+    vix: { cols: TAIFEX_VIX_COLS, rows: [] },
   },
 };
 
@@ -304,6 +306,35 @@ export function parseTaifexForeignFuturesCsv(bytes) {
     }
     rows.push([isoToInt(date), net]);
   }
+  rows.sort((left, right) => left[0] - right[0]);
+  return rows;
+}
+
+export function parseTaifexVixTxt(bytes) {
+  const text = decodeTaifexBig5Csv(bytes, 'TAIFEX VIX');
+  const lines = text.split(/\r\n|\n|\r/);
+  const firstLine = (lines[0] ?? '').replace(/^\uFEFF/, '');
+  if (!firstLine.startsWith('交易日期')) {
+    throw new Error('TAIFEX VIX: response first line is not a VIX header starting with 交易日期');
+  }
+
+  const rows = [];
+  for (let index = 1; index < lines.length; index += 1) {
+    const line = lines[index].replace(/^\uFEFF/, '');
+    if (!/^\d{8}\t/.test(line)) continue;
+    const cells = line.split('\t').map((cell) => cell.trim()).filter((cell) => cell !== '');
+    if (cells.length < 4) {
+      throw new Error(`TAIFEX VIX: row ${index + 1} has ${cells.length} cells, expected at least 4`);
+    }
+    const date = parseGregorianDate(cells[0]);
+    if (!date) throw new Error(`TAIFEX VIX: invalid date at row ${index + 1}`);
+    const vix = Number(cells[2]);
+    if (!Number.isFinite(vix)) {
+      throw new Error(`TAIFEX VIX: non-numeric index at ${cells[0]}`);
+    }
+    rows.push([isoToInt(date), vix]);
+  }
+  if (rows.length === 0) throw new Error('TAIFEX VIX: response has 0 data rows');
   rows.sort((left, right) => left[0] - right[0]);
   return rows;
 }
@@ -1104,6 +1135,7 @@ function normalizeMarket(input) {
     taifex: {
       pcr: { cols: MARKET_TEMPLATE.taifex.pcr.cols, rows: input?.taifex?.pcr?.rows ?? [] },
       fut: { cols: MARKET_TEMPLATE.taifex.fut.cols, rows: input?.taifex?.fut?.rows ?? [] },
+      vix: { cols: MARKET_TEMPLATE.taifex.vix.cols, rows: input?.taifex?.vix?.rows ?? [] },
     },
   };
 }
@@ -1121,6 +1153,7 @@ function refreshMarketUpdated(market) {
     ...market.tpex.insti.rows,
     ...market.taifex.pcr.rows,
     ...market.taifex.fut.rows,
+    ...market.taifex.vix.rows,
   ].map((row) => row[0]).sort((a, b) => a - b);
   market.updated = dates.length ? intToIso(dates.at(-1)) : null;
 }
@@ -1170,6 +1203,31 @@ export async function applyTaifexForeignFuturesMonth(rootDir, monthKey) {
   const marketPath = join(rootDir, 'data', 'derived', 'market.json');
   const market = normalizeMarket(await readExistingJson(marketPath, MARKET_TEMPLATE));
   for (const row of rows) upsertSeries(market.taifex.fut, row);
+  refreshMarketUpdated(market);
+  return {
+    rows: rows.length,
+    market: await writeDerivedJson(marketPath, market),
+  };
+}
+
+export async function applyTaifexVixMonth(rootDir, monthKey) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(monthKey ?? ''))) {
+    throw new Error(`TAIFEX VIX: invalid month key ${monthKey}`);
+  }
+  const path = join(
+    rootDir,
+    'data',
+    'raw',
+    'taifex',
+    'vix_monthly',
+    monthKey.slice(0, 4),
+    `${monthKey}.txt`,
+  );
+  const rows = parseTaifexVixTxt(await readFile(path));
+
+  const marketPath = join(rootDir, 'data', 'derived', 'market.json');
+  const market = normalizeMarket(await readExistingJson(marketPath, MARKET_TEMPLATE));
+  for (const row of rows) upsertSeries(market.taifex.vix, row);
   refreshMarketUpdated(market);
   return {
     rows: rows.length,

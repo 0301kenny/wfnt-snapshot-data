@@ -274,6 +274,11 @@ export const BACKFILL_ENDPOINTS = {
     sourceDataset: 'taifex/foreign_futures',
     url: 'https://www.taifex.com.tw/cht/3/futContractsDateDown',
   },
+  taifex_vix_monthly: {
+    cadence: 'monthly',
+    sourceDataset: 'taifex/vix_monthly',
+    url: (monthKey) => `https://www.taifex.com.tw/file/taifex/Dailydownload/vix/log2data/${monthKey.replace('-', '')}new.txt`,
+  },
 };
 
 export function endpointByKey(key) {

@@ -43,14 +43,17 @@ export function* monthsAscending(fromMonth, toMonth) {
   }
 }
 
-export function taifexMonthlyRawPath(rootDir, sourceDataset, monthKey) {
+export function taifexMonthlyRawPath(rootDir, sourceDataset, monthKey, extension = 'csv') {
+  if (!/^[a-z0-9]+$/.test(extension)) {
+    throw new Error(`TAIFEX monthly raw extension is invalid: ${extension}`);
+  }
   return join(
     rootDir,
     'data',
     'raw',
     sourceDataset,
     monthKey.slice(0, 4),
-    `${monthKey}.csv`,
+    `${monthKey}.${extension}`,
   );
 }
 
@@ -75,15 +78,21 @@ export function decodeTaifexBig5Csv(bytes, label) {
   }
 }
 
-export function validateTaifexMonthlyCsv(bytes, { label, parseRows, requireHeader }) {
+export function validateTaifexMonthlyCsv(bytes, {
+  label,
+  parseRows,
+  requireHeader,
+  headerPrefix = '日期,',
+  headerLabel = 'CSV header starting with 日期,',
+}) {
   const rows = parseRows(bytes);
   if (rows.length === 0) throw new Error(`${label}: response has 0 data rows`);
   if (!requireHeader) return rows;
   const firstLine = decodeTaifexBig5Csv(bytes, label)
     .split(/\r\n|\n|\r/, 1)[0]
     .replace(/^\uFEFF/, '');
-  if (!firstLine.startsWith('日期,')) {
-    throw new Error(`${label}: response first line is not a CSV header starting with 日期,`);
+  if (!firstLine.startsWith(headerPrefix)) {
+    throw new Error(`${label}: response first line is not a ${headerLabel}`);
   }
   return rows;
 }
@@ -111,6 +120,7 @@ export async function readValidTaifexMonthlyRaw(path, validation) {
 
 async function fetchTaifexMonth(endpoint, monthKey, {
   requestBodyForMonth,
+  requestMethod,
   validation,
   fetchImpl,
   sleepImpl,
@@ -119,22 +129,27 @@ async function fetchTaifexMonth(endpoint, monthKey, {
   logger,
   onRequest,
 }) {
-  const body = requestBodyForMonth(monthKey);
+  const body = requestBodyForMonth?.(monthKey);
+  const url = typeof endpoint.url === 'function' ? endpoint.url(monthKey) : endpoint.url;
   let lastError;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     onRequest();
     try {
-      const response = await fetchImpl(endpoint.url, {
-        method: 'POST',
-        headers: {
-          'User-Agent': USER_AGENT,
-          Referer: 'https://www.taifex.com.tw/',
-          Accept: 'text/csv,text/plain,text/html,*/*',
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body,
+      const headers = {
+        'User-Agent': USER_AGENT,
+        Referer: 'https://www.taifex.com.tw/',
+        Accept: 'text/csv,text/plain,text/html,*/*',
+      };
+      if (requestMethod === 'POST') {
+        headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      }
+      const request = {
+        method: requestMethod,
+        headers,
         signal: AbortSignal.timeout(60_000),
-      });
+      };
+      if (body !== undefined) request.body = body;
+      const response = await fetchImpl(url, request);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const bytes = Buffer.from(await response.arrayBuffer());
       return { bytes, rows: validateTaifexMonthlyCsv(bytes, validation) };
@@ -163,8 +178,13 @@ export async function runTaifexMonthlyBackfill({
   label,
   logPrefix,
   requestBodyForMonth,
+  requestMethod = 'POST',
+  rawExtension = 'csv',
+  refreshExistingRaw = false,
   parseRows,
   requireHeader = true,
+  headerPrefix = '日期,',
+  headerLabel = 'CSV header starting with 日期,',
   applyMonthImpl,
 } = {}) {
   rootDir = resolve(rootDir);
@@ -185,11 +205,25 @@ export async function runTaifexMonthlyBackfill({
   if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
   if (typeof sleepImpl !== 'function') throw new Error('sleepImpl must be a function');
   if (!endpoint?.url || !endpoint?.sourceDataset) throw new Error('endpoint must declare url and sourceDataset');
-  if (typeof requestBodyForMonth !== 'function') throw new Error('requestBodyForMonth must be a function');
+  if (!['GET', 'POST'].includes(requestMethod)) {
+    throw new Error(`requestMethod must be GET or POST, got: ${requestMethod}`);
+  }
+  if (requestMethod === 'POST' && typeof requestBodyForMonth !== 'function') {
+    throw new Error('requestBodyForMonth must be a function');
+  }
+  if (requestBodyForMonth !== undefined && typeof requestBodyForMonth !== 'function') {
+    throw new Error('requestBodyForMonth must be a function when provided');
+  }
+  if (!/^[a-z0-9]+$/.test(rawExtension)) {
+    throw new Error(`rawExtension must contain only lowercase letters and digits, got: ${rawExtension}`);
+  }
+  if (typeof refreshExistingRaw !== 'boolean') {
+    throw new Error(`refreshExistingRaw must be a boolean, got: ${refreshExistingRaw}`);
+  }
   if (typeof parseRows !== 'function') throw new Error('parseRows must be a function');
   if (typeof applyMonthImpl !== 'function') throw new Error('applyMonthImpl must be a function');
 
-  const validation = { label, parseRows, requireHeader };
+  const validation = { label, parseRows, requireHeader, headerPrefix, headerLabel };
   const summary = {
     months: 0,
     requests: 0,
@@ -203,21 +237,24 @@ export async function runTaifexMonthlyBackfill({
 
   for (const monthKey of monthsAscending(fromMonth, toMonth)) {
     summary.months += 1;
-    const path = taifexMonthlyRawPath(rootDir, endpoint.sourceDataset, monthKey);
+    const path = taifexMonthlyRawPath(rootDir, endpoint.sourceDataset, monthKey, rawExtension);
     const requestsBeforeMonth = summary.requests;
     try {
       let payload;
-      try {
-        payload = await readValidTaifexMonthlyRaw(path, validation);
-      } catch (error) {
-        logger.warn(`[refetch] ${monthKey} invalid existing raw: ${error.message}`);
-        payload = null;
+      if (!refreshExistingRaw) {
+        try {
+          payload = await readValidTaifexMonthlyRaw(path, validation);
+        } catch (error) {
+          logger.warn(`[refetch] ${monthKey} invalid existing raw: ${error.message}`);
+          payload = null;
+        }
       }
       if (payload) {
         summary.skipped += 1;
       } else {
         payload = await fetchTaifexMonth(endpoint, monthKey, {
           requestBodyForMonth,
+          requestMethod,
           validation,
           fetchImpl,
           sleepImpl,
