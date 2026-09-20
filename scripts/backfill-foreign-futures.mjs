@@ -58,6 +58,7 @@ export async function runForeignFuturesBackfill({
     logPrefix: 'backfill-foreign-futures',
     requestBodyForMonth: (monthKey) => calendarMonthRequestBody(monthKey, { commodityId: 'TXF' }),
     parseRows: parseTaifexForeignFuturesCsv,
+    requireHeader: true,
     applyMonthImpl: applyTaifexForeignFuturesMonthImpl,
   });
 }

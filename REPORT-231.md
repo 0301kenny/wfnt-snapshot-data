@@ -3,7 +3,7 @@
 Status: **READY_FOR_REVIEW**  
 Branch: `ticket-231`  
 Base HEAD: `3ff1e31c2b53ac62a080f257f780c4c3cd12cb9a`  
-Final test count: **133 pass / 0 fail** (baseline: 123 pass / 0 fail)
+Final test count: **135 pass / 0 fail** (baseline: 123 pass / 0 fail; attempt 1: 133 pass / 0 fail)
 
 No real network request was made. No command ran `build-derived.mjs` against the real `data/` tree. No `data/**` file, including `data/raw/taifex/vix_monthly/**`, was edited. No commit was created.
 
@@ -166,14 +166,128 @@ removed_capabilities: []
 ```
 
 - `AGENTS.md` allowlist: one official TAIFEX backfill endpoint was added; no endpoint or permission was removed.
-- PCR common-module extraction: no supported PCR behavior or public export was removed. The unchanged 9-test PCR suite passes. The shared raw validator additionally enforces the official `日期,` header, so malformed/headerless bytes that are not valid official raw are rejected; this is validation hardening, not removal of a supported capability.
+- PCR common-module extraction: no supported PCR behavior or public export was removed. The unchanged 9-test PCR suite passes. Header validation is source-specific: PCR retains its original `rows.length > 0` rule, while foreign futures additionally requires the official `日期,` header.
 - Existing six `market.json` series retain their columns and rows during `taifex.fut` upserts; no daily pipeline endpoint or derived transformation was removed.
 
 ## Choices made where the contract left latitude
 
 1. **Dynamic default range:** use the first complete calendar month after the approximately three-year rolling boundary, and end at the previous complete calendar month. This avoids predictable HTTP-200 DateTime errors at the partial oldest month and avoids future dates in the incomplete current month. Both boundaries use Asia/Taipei calendar time and move with the injected clock. Explicit `--from` / `--to` still override them.
 2. **Shared seam shape:** use one adapter-driven monthly runner rather than inheritance or a second script copy. PCR and foreign futures share iteration, pathing, validation, checkpointing, byte-preserving writes, retry/backoff, continuation, and summary behavior; only endpoint/form/parser/derived adapters differ.
-3. **Validation order:** parse first and report zero data rows before checking the header. This preserves PCR's existing error text for HTTP-200 HTML pages while still enforcing the contracted first-line marker for any otherwise parseable response.
+3. **Validation policy and order:** both sources parse first and report zero data rows first. Only foreign futures then checks the contracted first-line marker; PCR returns after the original positive-row rule.
 4. **Full rebuild order:** replay PCR first and foreign futures second. Both normalize and preserve the other series, and `market.updated` is recomputed as the maximum date across all seven market series, so the order does not alter final bytes.
 5. **Test fixtures:** embed official-format Big5 header/identity bytes and HF5 measured values directly in the new test module. This keeps acceptance offline and avoids adding a fixture format or dependency.
 
+## Attempt 2 — accepted finding resolution
+
+Reviewer findings R-001 (P2) and R-002 (P3) were both reproduced from source inspection and fixed without changing `tests/taifex-pcr.test.mjs`, parser/derived/raw-path behavior, or any generated data.
+
+### R-001 — PASS: header validation is source-specific
+
+Fix:
+
+- `runTaifexMonthlyBackfill` now accepts `requireHeader`, defaulting to `false`.
+- `backfill-pcr.mjs` explicitly passes `requireHeader: false`, restoring the pre-refactor PCR rule: parsed row count must be positive, with no header requirement.
+- `backfill-foreign-futures.mjs` explicitly passes `requireHeader: true`, retaining HF2's `日期,` requirement.
+- A new differential test sends headerless but otherwise valid rows through both runners.
+
+Actual focused output:
+
+```text
+$ rtk node --test tests/taifex-foreign-futures.test.mjs
+# Subtest: TAIFEX monthly header policy accepts headerless PCR rows but rejects headerless foreign-futures rows
+ok 6 - TAIFEX monthly header policy accepts headerless PCR rows but rejects headerless foreign-futures rows
+# R001_PCR_HEADERLESS=ACCEPTED R001_FOREIGN_HEADERLESS=REJECTED R001_FOREIGN_RAW_EXISTS=false
+```
+
+The unchanged PCR suite remains green:
+
+```text
+$ rtk node --test tests/taifex-pcr.test.mjs
+1..9
+# tests 9
+# suites 0
+# pass 9
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 149.745764
+exit_code=0
+```
+
+Required diff-stat output remains empty (exit 0):
+
+```text
+$ rtk proxy git diff --stat -- tests/taifex-pcr.test.mjs
+```
+
+### R-002 — PASS: injected `now` reaches runner defaults
+
+Fix:
+
+- Added a runner-level test that omits both `fromMonth` and `toMonth`.
+- The injected fetcher records every requested `queryStartDate`; no network is used.
+- Moving injected `now` from September to October shifts the actual first and last requested months by one month.
+
+Actual focused output:
+
+```text
+$ rtk node --test tests/taifex-foreign-futures.test.mjs
+# Subtest: foreign futures runner uses injected now for its omitted from and to defaults
+ok 9 - foreign futures runner uses injected now for its omitted from and to defaults
+# R002_RUNNER_2026_09=2023/10..2026/08 R002_RUNNER_2026_10=2023/11..2026/09 REQUESTS=35/35
+```
+
+Focused suite final summary:
+
+```text
+1..12
+# tests 12
+# suites 0
+# pass 12
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 247.767326
+exit_code=0
+```
+
+### Attempt 2 full regression — PASS
+
+Actual final summary:
+
+```text
+$ rtk node --test tests/
+1..135
+# tests 135
+# suites 0
+# pass 135
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 7022.39192
+exit_code=0
+```
+
+`135 > 133`, satisfying the return-batch test-count requirement.
+
+### Attempt 2 files changed
+
+- `scripts/lib/taifex-monthly-backfill.mjs` — added the source-specific `requireHeader` validation option and stopped before header decoding when it is false.
+- `scripts/backfill-pcr.mjs` — explicitly selects the original no-header-check PCR policy.
+- `scripts/backfill-foreign-futures.mjs` — explicitly selects the mandatory foreign-futures header policy.
+- `tests/taifex-foreign-futures.test.mjs` — added the R-001 differential runner test and R-002 omitted-range/injected-clock runner test.
+- `REPORT-231.md` — appended attempt 2 fixes and execution evidence and corrected the current PCR capability statement.
+
+### Attempt 2 `removed_capabilities`
+
+```yaml
+removed_capabilities: []
+```
+
+- R-001 restores the pre-refactor PCR capability to accept headerless input when valid PCR data rows exist; it removes the unintended attempt-1 restriction, not a supported capability.
+- Foreign-futures validation loses nothing: it still requires `日期,` plus at least one parsed data row and still refuses invalid raw before write.
+- R-002 changes tests only; runtime default-range behavior is unchanged and is now mechanically covered through the runner.
+- No endpoint, CLI flag, raw path, parser field, derived series, daily-pipeline behavior, or AGENTS.md allowlist entry was removed.

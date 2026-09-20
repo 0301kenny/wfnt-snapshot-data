@@ -23,6 +23,7 @@ export async function runPcrBackfill({
     logPrefix: 'backfill-pcr',
     requestBodyForMonth: calendarMonthRequestBody,
     parseRows: parseTaifexPcrCsv,
+    requireHeader: false,
     applyMonthImpl: applyTaifexPcrMonthImpl,
   });
 }

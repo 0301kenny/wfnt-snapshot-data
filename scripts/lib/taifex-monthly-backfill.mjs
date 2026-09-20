@@ -75,9 +75,10 @@ export function decodeTaifexBig5Csv(bytes, label) {
   }
 }
 
-export function validateTaifexMonthlyCsv(bytes, { label, parseRows }) {
+export function validateTaifexMonthlyCsv(bytes, { label, parseRows, requireHeader }) {
   const rows = parseRows(bytes);
   if (rows.length === 0) throw new Error(`${label}: response has 0 data rows`);
+  if (!requireHeader) return rows;
   const firstLine = decodeTaifexBig5Csv(bytes, label)
     .split(/\r\n|\n|\r/, 1)[0]
     .replace(/^\uFEFF/, '');
@@ -163,6 +164,7 @@ export async function runTaifexMonthlyBackfill({
   logPrefix,
   requestBodyForMonth,
   parseRows,
+  requireHeader = false,
   applyMonthImpl,
 } = {}) {
   rootDir = resolve(rootDir);
@@ -187,7 +189,7 @@ export async function runTaifexMonthlyBackfill({
   if (typeof parseRows !== 'function') throw new Error('parseRows must be a function');
   if (typeof applyMonthImpl !== 'function') throw new Error('applyMonthImpl must be a function');
 
-  const validation = { label, parseRows };
+  const validation = { label, parseRows, requireHeader };
   const summary = {
     months: 0,
     requests: 0,

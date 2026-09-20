@@ -8,6 +8,7 @@ import {
   foreignFuturesDefaultRange,
   runForeignFuturesBackfill,
 } from '../scripts/backfill-foreign-futures.mjs';
+import { runPcrBackfill } from '../scripts/backfill-pcr.mjs';
 import { buildDerived } from '../scripts/build-derived.mjs';
 import {
   applyTaifexForeignFuturesMonth,
@@ -253,6 +254,55 @@ test('foreign futures raw validation requires the first line to start with the B
   });
 });
 
+test('TAIFEX monthly header policy accepts headerless PCR rows but rejects headerless foreign-futures rows', async (t) => {
+  await withTempDir(async (root) => {
+    const pcrBytes = Buffer.from('2026/08/31,161117,136134,118.35,61681,64172,96.12,\r\n');
+    const pcrRoot = join(root, 'pcr');
+    const pcr = await runPcrBackfill({
+      rootDir: pcrRoot,
+      fromMonth: '2026-08',
+      toMonth: '2026-08',
+      delayMs: 0,
+      maxRetries: 0,
+      fetchImpl: async () => responseFor(pcrBytes),
+      sleepImpl: async () => {},
+      logger: silentLogger,
+    });
+    assert.equal(pcr.failures.length, 0);
+    assert.deepEqual(
+      await readFile(join(pcrRoot, 'data/raw/taifex/pcr/2026/2026-08.csv')),
+      pcrBytes,
+    );
+
+    const foreignBytes = futuresFixture(
+      [{ date: '2026/08/31', net: -82515 }],
+      { header: false },
+    );
+    const foreignRoot = join(root, 'foreign');
+    let caught;
+    try {
+      await runForeignFuturesBackfill({
+        rootDir: foreignRoot,
+        fromMonth: '2026-08',
+        toMonth: '2026-08',
+        delayMs: 0,
+        maxRetries: 0,
+        fetchImpl: async () => responseFor(foreignBytes),
+        sleepImpl: async () => {},
+        logger: silentLogger,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    assert.match(caught?.summary?.failures?.[0]?.error ?? '', /first line is not a CSV header/);
+    await assert.rejects(
+      readFile(join(foreignRoot, 'data/raw/taifex/foreign_futures/2026/2026-08.csv')),
+      { code: 'ENOENT' },
+    );
+    t.diagnostic('R001_PCR_HEADERLESS=ACCEPTED R001_FOREIGN_HEADERLESS=REJECTED R001_FOREIGN_RAW_EXISTS=false');
+  });
+});
+
 test('foreign futures backfill continues after a failed month and reports failures at the end', async (t) => {
   await withTempDir(async (root) => {
     const august = futuresFixture([{ date: '2026/08/03', net: -80000 }]);
@@ -292,6 +342,44 @@ test('foreign futures default range follows the injected clock instead of a fixe
   assert.deepEqual(taipeiOctoberBoundary, october);
   assert.notEqual(september.fromMonth, october.fromMonth);
   t.diagnostic(`A5_CLOCK_2026_09=${JSON.stringify(september)} A5_CLOCK_2026_10=${JSON.stringify(october)}`);
+});
+
+test('foreign futures runner uses injected now for its omitted from and to defaults', async (t) => {
+  await withTempDir(async (root) => {
+    async function requestedMonths(rootDir, now) {
+      const months = [];
+      const summary = await runForeignFuturesBackfill({
+        rootDir,
+        now: () => new Date(now),
+        delayMs: 0,
+        maxRetries: 0,
+        fetchImpl: async (_url, options) => {
+          months.push(new URLSearchParams(options.body).get('queryStartDate').slice(0, 7));
+          return responseFor(JULY_DESCENDING);
+        },
+        sleepImpl: async () => {},
+        applyTaifexForeignFuturesMonthImpl: async () => ({ market: false }),
+        logger: silentLogger,
+      });
+      assert.equal(summary.requests, months.length);
+      return months;
+    }
+
+    const september = await requestedMonths(
+      join(root, 'september'),
+      '2026-09-20T00:00:00Z',
+    );
+    const october = await requestedMonths(
+      join(root, 'october'),
+      '2026-10-20T00:00:00Z',
+    );
+    assert.equal(september.length, 35);
+    assert.equal(october.length, 35);
+    assert.deepEqual([september[0], september.at(-1)], ['2023/10', '2026/08']);
+    assert.deepEqual([october[0], october.at(-1)], ['2023/11', '2026/09']);
+    assert.notDeepEqual(september, october);
+    t.diagnostic(`R002_RUNNER_2026_09=${september[0]}..${september.at(-1)} R002_RUNNER_2026_10=${october[0]}..${october.at(-1)} REQUESTS=${september.length}/${october.length}`);
+  });
 });
 
 test('foreign futures derived upsert preserves all six existing market series and is byte-idempotent', async (t) => {
