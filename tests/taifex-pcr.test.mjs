@@ -15,12 +15,22 @@ import {
 } from '../scripts/lib/derived.mjs';
 
 const silentLogger = { log() {}, warn() {} };
-const AUGUST_DESCENDING = Buffer.from([
-  'fixture header ignored by the data-row regexp',
+const BIG5_HEADER = Buffer.from(
+  'a4e9b4c12cbde6c576a6a8a5e6b6712cb652c576a6a8a5e6b6712cb652bde6c576a6a8a5e6b671a4f1b276252cbde6c576a5bca5adaddcb6712cb652c576a5bca5adaddcb6712cb652bde6c576a5bca5adaddcb671a4f1b27625',
+  'hex',
+);
+
+function pcrFixture(rows) {
+  return Buffer.concat([
+    BIG5_HEADER,
+    Buffer.from(`\r\n${rows.join('\r\n')}\r\n`, 'ascii'),
+  ]);
+}
+
+const AUGUST_DESCENDING = pcrFixture([
   '2026/08/31,161117,136134,118.35,61681,64172,96.12,',
   '2026/08/03,100,200,102.71,300,400,97.66,',
-  '',
-].join('\r\n'), 'ascii');
+]);
 const AUGUST_ASCENDING_ROWS = [
   [20260803, 102.71, 97.66],
   [20260831, 118.35, 96.12],
@@ -65,13 +75,12 @@ async function readMarket(root) {
 }
 
 test('TAIFEX PCR parser maps real-format values, accepts the trailing comma, and sorts ascending', (t) => {
-  const fixture = Buffer.from([
-    'official Big5 header omitted; parser ignores non-data rows',
+  const fixture = pcrFixture([
     '2026/08/31,161117,136134,118.35,61681,64172,96.12,',
     '2024/02/29,1,1,105.91,1,1,127.09,',
     '2024/02/01,1,1,100.54,1,1,111.61,',
-    '',
-  ].join('\r\n'));
+  ]);
+  assert.equal(fixture.subarray(0, 16).toString('hex'), 'a4e9b4c12cbde6c576a6a8a5e6b6712c');
   const rows = parseTaifexPcrCsv(fixture);
   assert.deepEqual(rows, [
     [20240201, 100.54, 111.61],
@@ -91,6 +100,14 @@ test('TAIFEX PCR parser throws for short and non-numeric data rows', (t) => {
     /non-numeric put volume at 2026-08-31/,
   );
   t.diagnostic('A3_SHORT_ROW=THREW A3_NON_NUMERIC=THREW');
+});
+
+test('TAIFEX PCR parser rejects an illegal Big5 byte sequence', (t) => {
+  assert.throws(
+    () => parseTaifexPcrCsv(Buffer.from([0x81])),
+    /TAIFEX PCR: invalid big5 CSV/,
+  );
+  t.diagnostic('BIG5_INVALID_BYTES=81 RESULT=THREW_INVALID_BIG5_CSV');
 });
 
 test('PCR backfill posts one calendar month, preserves raw bytes, and checkpoints valid raw', async (t) => {
