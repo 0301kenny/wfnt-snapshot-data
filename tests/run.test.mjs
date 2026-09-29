@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -770,6 +770,152 @@ test('insider holding projection deduplicates holders, selects point-in-time cap
       await readFile(join(root, 'data', 'derived', 'insider', '64', '6488.json')),
       incrementalTpex,
     );
+  });
+});
+
+test('company capital write backfills the latest stored insider month and matches rebuild', async () => {
+  await withTempDir(async (root) => {
+    const holdings = fixtureBodies({
+      twse_insider_holding: jsonBody([
+        { '出表日期': '1150701', '資料年月': '11506', '公司代號': '2330', '職稱': '董事', '姓名': '甲持有人', '選任時持股 ': '1', '目前持股': '500', '設質股數': '100' },
+      ]),
+    });
+    const first = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(holdings),
+      datasets: ['twse_insider_holding'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    assert.equal(first.exitCode, 0);
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'insider', '23', '2330.json')));
+
+    const withCapital = fixtureBodies({
+      twse_company_capital: jsonBody([
+        { '出表日期': '1150706', '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '2,000' },
+      ]),
+      twse_insider_holding: holdings.twse_insider_holding,
+    });
+    const second = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(withCapital),
+      datasets: ['twse_company_capital', 'twse_insider_holding'],
+      now: () => new Date('2026-07-06T14:45:00Z'),
+    });
+    assert.equal(second.exitCode, 0);
+    assert.equal(second.results.find((result) => result.key === 'twse_insider_holding').status, 'same');
+    assert.equal(second.results.find((result) => result.key === 'twse_company_capital').status, 'write');
+    const expected = {
+      id: '2330',
+      updated: '2026-06-01',
+      cols: ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'],
+      rows: [[202606, 25, 20, 25, 20, 2000]],
+    };
+    assert.deepEqual(await readJson(root, 'data/derived/insider/23/2330.json'), expected);
+    const incremental = await readFile(join(root, 'data', 'derived', 'insider', '23', '2330.json'));
+
+    await rm(join(root, 'data', 'derived'), { recursive: true, force: true });
+    await buildDerived({ rootDir: root });
+    assert.deepEqual(await readJson(root, 'data/derived/insider/23/2330.json'), expected);
+    assert.deepEqual(
+      await readFile(join(root, 'data', 'derived', 'insider', '23', '2330.json')),
+      incremental,
+    );
+  });
+});
+
+test('insider holding keeps holdings when pledge is missing and nulls only the affected pledge ratio', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        twse_company_capital: jsonBody([
+          { '出表日期': '1150620', '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '4,000' },
+        ]),
+      })),
+      datasets: ['twse_company_capital'],
+      now: () => new Date('2026-06-20T13:45:00Z'),
+    });
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        twse_insider_holding: jsonBody([
+          { '出表日期': '1150620', '資料年月': '11506', '公司代號': '2330', '職稱': '董事', '姓名': '甲持有人', '選任時持股 ': '1', '目前持股': '600', '設質股數': '300' },
+          { '出表日期': '1150620', '資料年月': '11506', '公司代號': '2330', '職稱': '經理人', '姓名': '乙持有人', '選任時持股 ': '1', '目前持股': '200', '設質股數': '' },
+        ]),
+      })),
+      datasets: ['twse_insider_holding'],
+      now: () => new Date('2026-06-20T13:45:00Z'),
+    });
+    assert.deepEqual(await readJson(root, 'data/derived/insider/23/2330.json'), {
+      id: '2330',
+      updated: '2026-06-01',
+      cols: ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'],
+      rows: [[202606, 15, 50, 20, null, 4000]],
+    });
+  });
+});
+
+test('insider holding projection excludes pure six digit ids', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        twse_company_capital: jsonBody([
+          { '出表日期': '1150620', '公司代號': '123456', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '1,000' },
+        ]),
+      })),
+      datasets: ['twse_company_capital'],
+      now: () => new Date('2026-06-20T13:45:00Z'),
+    });
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        twse_insider_holding: jsonBody([
+          { '出表日期': '1150620', '資料年月': '11506', '公司代號': '123456', '職稱': '董事', '姓名': '六碼持有人', '選任時持股 ': '1', '目前持股': '100', '設質股數': '0' },
+        ]),
+      })),
+      datasets: ['twse_insider_holding'],
+      now: () => new Date('2026-06-20T13:45:00Z'),
+    });
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'insider', '12', '123456.json')));
+  });
+});
+
+test('insider holding projection parses only the selected capital file', async () => {
+  await withTempDir(async (root) => {
+    for (const date of ['1150615', '1150625']) {
+      await runSnapshot({
+        rootDir: root,
+        fetcher: fetcherFor(fixtureBodies({
+          twse_mi_index: jsonBody([{ '日期': date, '指數': '寶島股價指數', '收盤指數': '1' }]),
+          twse_company_capital: jsonBody([
+            { '出表日期': date, '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': date === '1150615' ? '4,000' : '8,000' },
+          ]),
+        })),
+        datasets: ['twse_company_capital'],
+        now: () => new Date('2026-06-25T13:45:00Z'),
+      });
+    }
+    await writeFile(
+      join(root, 'data', 'raw', 'twse', 'company_capital', '2026', '2026-06-25.json'),
+      '{damaged unselected capital fixture',
+    );
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        twse_insider_holding: jsonBody([
+          { '出表日期': '1150620', '資料年月': '11506', '公司代號': '2330', '職稱': '董事', '姓名': '甲持有人', '選任時持股 ': '1', '目前持股': '600', '設質股數': '300' },
+        ]),
+      })),
+      datasets: ['twse_insider_holding'],
+      now: () => new Date('2026-06-25T13:45:00Z'),
+    });
+    assert.deepEqual(await readJson(root, 'data/derived/insider/23/2330.json'), {
+      id: '2330',
+      updated: '2026-06-01',
+      cols: ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'],
+      rows: [[202606, 15, 50, 15, 50, 4000]],
+    });
   });
 });
 

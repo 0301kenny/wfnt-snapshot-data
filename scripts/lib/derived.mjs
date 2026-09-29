@@ -1507,33 +1507,25 @@ async function readInsiderHoldingRaw(rootDir, market, monthKey) {
   );
 }
 
-async function readCompanyCapitalTimeline(rootDir, market) {
-  const fields = INSIDER_MARKET_FIELDS[market];
-  const sourceDataset = `${market}/company_capital`;
-  const dates = await listJsonDates(join(rootDir, 'data', 'raw', sourceDataset));
-  const byCompany = new Map();
-  for (const fileDate of dates) {
-    const rows = await readJsonRaw(rootDir, sourceDataset, fileDate);
-    if (!Array.isArray(rows)) continue;
-    for (const row of rows) {
-      const id = String(row?.[fields.capitalId] ?? '').trim();
-      const date = parseTradingDate(row?.[fields.capitalDate]);
-      const issued = compactNumber(row?.[fields.issued]);
-      if (!id || !date || issued === null) continue;
-      if (!byCompany.has(id)) byCompany.set(id, []);
-      byCompany.get(id).push({ date, issued });
-    }
-  }
-  for (const entries of byCompany.values()) {
-    entries.sort((left, right) => left.date.localeCompare(right.date));
-  }
-  return byCompany;
+function capitalFileDateAtReportDate(dates, reportDate) {
+  if (!dates.length || !reportDate) return null;
+  const notAfterReport = dates.filter((date) => date <= reportDate);
+  return notAfterReport.at(-1) ?? dates[0];
 }
 
-function capitalAtReportDate(entries, reportDate) {
-  if (!entries?.length || !reportDate) return null;
-  const notAfterReport = entries.filter((entry) => entry.date <= reportDate);
-  return notAfterReport.at(-1) ?? entries[0];
+async function readCompanyCapitalFile(rootDir, market, fileDate) {
+  const fields = INSIDER_MARKET_FIELDS[market];
+  const sourceDataset = `${market}/company_capital`;
+  const byCompany = new Map();
+  const rows = await readJsonRaw(rootDir, sourceDataset, fileDate);
+  if (!Array.isArray(rows)) return byCompany;
+  for (const row of rows) {
+    const id = String(row?.[fields.capitalId] ?? '').trim();
+    const issued = compactNumber(row?.[fields.issued]);
+    if (!id || issued === null) continue;
+    byCompany.set(id, { issued });
+  }
+  return byCompany;
 }
 
 function aggregateInsiderRows(rows) {
@@ -1544,7 +1536,7 @@ function aggregateInsiderRows(rows) {
     const reportDate = parseTradingDate(row?.['出表日期']);
     const holding = compactNumber(row?.['目前持股']);
     const pledged = compactNumber(row?.['設質股數']);
-    if (!id || !name || !reportDate || holding === null || pledged === null) continue;
+    if (!id || !name || !reportDate || holding === null || !isDerivedSymbolId(id)) continue;
     if (!companies.has(id)) companies.set(id, { reportDate, holders: new Map() });
     const company = companies.get(id);
     if (reportDate > company.reportDate) company.reportDate = reportDate;
@@ -1586,28 +1578,46 @@ export async function applyInsiderHoldingMonth(
   for (const market of ['twse', 'tpex']) {
     const rows = await readInsiderHoldingRaw(rootDir, market, monthKey);
     if (!Array.isArray(rows)) continue;
-    const capitalByCompany = await readCompanyCapitalTimeline(rootDir, market);
+    const capitalDataset = `${market}/company_capital`;
+    const capitalDates = await listJsonDates(join(rootDir, 'data', 'raw', capitalDataset));
+    const capitalFiles = new Map();
     for (const [id, company] of aggregateInsiderRows(rows)) {
-      const capital = capitalAtReportDate(capitalByCompany.get(id), company.reportDate);
+      const capitalFileDate = capitalFileDateAtReportDate(capitalDates, company.reportDate);
+      if (!capitalFileDate) continue;
+      if (!capitalFiles.has(capitalFileDate)) {
+        capitalFiles.set(
+          capitalFileDate,
+          await readCompanyCapitalFile(rootDir, market, capitalFileDate),
+        );
+      }
+      const capital = capitalFiles.get(capitalFileDate).get(id);
       if (!capital || capital.issued <= 0) continue;
       let directorHolding = 0;
       let directorPledged = 0;
+      let directorPledgeComplete = true;
       let insiderHolding = 0;
       let insiderPledged = 0;
+      let insiderPledgeComplete = true;
       for (const holder of company.holders.values()) {
         insiderHolding += holder.holding;
-        insiderPledged += holder.pledged;
+        if (holder.pledged === null) insiderPledgeComplete = false;
+        else insiderPledged += holder.pledged;
         if (holder.isDirector) {
           directorHolding += holder.holding;
-          directorPledged += holder.pledged;
+          if (holder.pledged === null) directorPledgeComplete = false;
+          else directorPledged += holder.pledged;
         }
       }
       const row = [
         month,
         round2((directorHolding / capital.issued) * 100),
-        directorHolding === 0 ? null : round2((directorPledged / directorHolding) * 100),
+        directorHolding === 0 || !directorPledgeComplete
+          ? null
+          : round2((directorPledged / directorHolding) * 100),
         round2((insiderHolding / capital.issued) * 100),
-        insiderHolding === 0 ? null : round2((insiderPledged / insiderHolding) * 100),
+        insiderHolding === 0 || !insiderPledgeComplete
+          ? null
+          : round2((insiderPledged / insiderHolding) * 100),
         capital.issued,
       ];
       if (await upsertInsider(rootDir, id, row, insiderWindow)) insider += 1;

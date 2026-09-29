@@ -554,6 +554,16 @@ export async function runSnapshot({
       .filter((result) => result.key.endsWith('_insider_holding') && ['write', 'revise', 'forced'].includes(result.status))
       .map((result) => result.month),
   );
+  const changedCapitalMarkets = new Set(
+    results
+      .filter((result) => result.key.endsWith('_company_capital') && ['write', 'revise', 'forced'].includes(result.status))
+      .map((result) => result.market),
+  );
+  for (const market of changedCapitalMarkets) {
+    const holdingEndpoint = endpointByKey(`${market}_insider_holding`);
+    const latestHoldingMonth = (await storedMonthsForEndpoint(rootDir, holdingEndpoint)).at(-1);
+    if (latestHoldingMonth) changedInsiderMonthsForDerived.add(latestHoldingMonth);
+  }
   const changedTdccWeeksForDerived = results
     .filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status))
     .map((result) => result.date);
