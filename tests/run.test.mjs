@@ -662,6 +662,117 @@ test('build-derived rebuild matches incremental output and repeated rebuild is b
   });
 });
 
+test('insider holding projection deduplicates holders, selects point-in-time capital, and rebuilds byte-identically', async () => {
+  await withTempDir(async (root) => {
+    const capitalFixtures = [
+      {
+        date: '1150605',
+        gregorianDate: '20260605',
+        twseIssued: '3,000',
+        tpexIssued: '5,000',
+      },
+      {
+        date: '1150615',
+        gregorianDate: '20260615',
+        twseIssued: '4,000',
+        tpexIssued: '6,000',
+      },
+      {
+        date: '1150625',
+        gregorianDate: '20260625',
+        twseIssued: '8,000',
+        tpexIssued: '10,000',
+      },
+    ];
+    for (const fixture of capitalFixtures) {
+      const bodies = fixtureBodies({
+        twse_mi_index: jsonBody([{ '日期': fixture.date, '指數': '寶島股價指數', '收盤指數': '1' }]),
+        tpex_index: jsonBody([{ Date: fixture.gregorianDate, Open: '1', High: '1', Low: '1', Close: '1' }]),
+        twse_company_capital: jsonBody([
+          { '出表日期': fixture.date, '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': fixture.twseIssued },
+          { '出表日期': fixture.date, '公司代號': '2222', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '2,000' },
+          { '出表日期': fixture.date, '公司代號': '1111', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '0' },
+        ]),
+        tpex_company_capital: jsonBody([
+          { Date: fixture.date, SecuritiesCompanyCode: '6488', 'Paidin.Capital.NTDollars': '1', IssueShares: fixture.tpexIssued },
+          { Date: fixture.date, SecuritiesCompanyCode: '7777', 'Paidin.Capital.NTDollars': '1', IssueShares: '0' },
+        ]),
+      });
+      const summary = await runSnapshot({
+        rootDir: root,
+        fetcher: fetcherFor(bodies),
+        datasets: ['twse_company_capital', 'tpex_company_capital'],
+        now: () => new Date('2026-06-25T13:45:00Z'),
+      });
+      assert.equal(summary.exitCode, 0);
+    }
+
+    const holdings = fixtureBodies({
+      twse_insider_holding: jsonBody([
+        { '出表日期': '1150620', '資料年月': '11506', '公司代號': '2330', '職稱': '董事長本人', '姓名': '甲持有人', '目前持股': '600', '設質股數': '300' },
+        { '出表日期': '1150620', '資料年月': '11506', '公司代號': '2330', '職稱': '董事本人', '姓名': '甲持有人', '目前持股': '600', '設質股數': '300' },
+        { '出表日期': '1150620', '資料年月': '11506', '公司代號': '2330', '職稱': '大股東本人', '姓名': '甲持有人', '目前持股': '600', '設質股數': '300' },
+        { '出表日期': '1150620', '資料年月': '11506', '公司代號': '2330', '職稱': '經理人', '姓名': '乙持有人', '目前持股': '200', '設質股數': '0' },
+        { '出表日期': '1150620', '資料年月': '11506', '公司代號': '2222', '職稱': '經理人', '姓名': '零持股', '目前持股': '0', '設質股數': '0' },
+        { '出表日期': '1150620', '資料年月': '11506', '公司代號': '9999', '職稱': '董事', '姓名': '無股本', '目前持股': '1', '設質股數': '0' },
+        { '出表日期': '1150620', '資料年月': '11506', '公司代號': '1111', '職稱': '董事', '姓名': '零股本', '目前持股': '1', '設質股數': '0' },
+      ].map((row) => ({ '選任時持股 ': '1', ...row }))),
+      tpex_insider_holding: jsonBody([
+        { '出表日期': '1150601', '資料年月': '11506', '公司代號': '6488', '職稱': '董事', '姓名': '丙持有人', '目前持股': '500', '設質股數': '50' },
+        { '出表日期': '1150601', '資料年月': '11506', '公司代號': '6488', '職稱': '經理人', '姓名': '丁持有人', '目前持股': '500', '設質股數': '100' },
+        { '出表日期': '1150601', '資料年月': '11506', '公司代號': '7777', '職稱': '董事', '姓名': '零股本', '目前持股': '1', '設質股數': '0' },
+      ].map((row) => ({ '選任時持股': '1', ...row }))),
+    });
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(holdings),
+      datasets: ['twse_insider_holding', 'tpex_insider_holding'],
+      now: () => new Date('2026-06-25T13:45:00Z'),
+    });
+    assert.equal(summary.exitCode, 0);
+
+    const twseExpected = {
+      id: '2330',
+      updated: '2026-06-01',
+      cols: ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'],
+      rows: [[202606, 15, 50, 20, 37.5, 4000]],
+    };
+    const tpexExpected = {
+      id: '6488',
+      updated: '2026-06-01',
+      cols: ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'],
+      rows: [[202606, 10, 10, 20, 15, 5000]],
+    };
+    assert.deepEqual(await readJson(root, 'data/derived/insider/23/2330.json'), twseExpected);
+    assert.deepEqual(await readJson(root, 'data/derived/insider/64/6488.json'), tpexExpected);
+    assert.deepEqual(await readJson(root, 'data/derived/insider/22/2222.json'), {
+      id: '2222',
+      updated: '2026-06-01',
+      cols: ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'],
+      rows: [[202606, 0, null, 0, null, 2000]],
+    });
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'insider', '99', '9999.json')));
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'insider', '11', '1111.json')));
+    await assert.rejects(readFile(join(root, 'data', 'derived', 'insider', '77', '7777.json')));
+    const incrementalTwse = await readFile(join(root, 'data', 'derived', 'insider', '23', '2330.json'));
+    const incrementalTpex = await readFile(join(root, 'data', 'derived', 'insider', '64', '6488.json'));
+
+    await rm(join(root, 'data', 'derived'), { recursive: true, force: true });
+    const rebuiltSummary = await buildDerived({ rootDir: root });
+    assert.equal(rebuiltSummary.insiderMonths, 1);
+    assert.deepEqual(await readJson(root, 'data/derived/insider/23/2330.json'), twseExpected);
+    assert.deepEqual(await readJson(root, 'data/derived/insider/64/6488.json'), tpexExpected);
+    assert.deepEqual(
+      await readFile(join(root, 'data', 'derived', 'insider', '23', '2330.json')),
+      incrementalTwse,
+    );
+    assert.deepEqual(
+      await readFile(join(root, 'data', 'derived', 'insider', '64', '6488.json')),
+      incrementalTpex,
+    );
+  });
+});
+
 test('bwibbu raw produces valuation fundamentals, nulls invalid numbers, and excludes pure six digit ids', async () => {
   await withTempDir(async (root) => {
     const bodies = fixtureBodies({

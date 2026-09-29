@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { SERIES_ENDPOINTS } from '../endpoints.mjs';
 import { parseGregorianDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
-import { readJsonIfExists, writeFileEnsured } from './io.mjs';
+import { listJsonDates, readJsonIfExists, writeFileEnsured } from './io.mjs';
 import { decodeTaifexBig5Csv } from './taifex-monthly-backfill.mjs';
 
 export const DEFAULT_SYMBOL_WINDOW = 1300;
@@ -11,6 +11,7 @@ export const DEFAULT_TDCC_WINDOW = 64;
 export const DEFAULT_VALUATION_WINDOW = 1300;
 export const DEFAULT_REVENUE_WINDOW = 36;
 export const DEFAULT_QUARTERLY_WINDOW = 24;
+export const DEFAULT_INSIDER_WINDOW = 60;
 export const MACRO_START_DATE = 20210101;
 export const DERIVED_INPUT_DATASETS = new Set([
   'twse/mi_index',
@@ -40,6 +41,19 @@ const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
 const TAIFEX_PCR_COLS = ['d', 'vol', 'oi'];
 const TAIFEX_FUT_COLS = ['d', 'net'];
 const TAIFEX_VIX_COLS = ['d', 'vix'];
+const INSIDER_COLS = ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'];
+const INSIDER_MARKET_FIELDS = Object.freeze({
+  twse: Object.freeze({
+    capitalId: '公司代號',
+    capitalDate: '出表日期',
+    issued: '已發行普通股數或TDR原股發行股數',
+  }),
+  tpex: Object.freeze({
+    capitalId: 'SecuritiesCompanyCode',
+    capitalDate: 'Date',
+    issued: 'IssueShares',
+  }),
+});
 export const QUARTERLY_COLS = ['q', 'gm', 'om', 'nm'];
 export const FUNDAMENTAL_SERIES = Object.freeze({
   valuation: Object.freeze({
@@ -1476,6 +1490,130 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
   refreshMarketUpdated(market);
   written.market = await writeDerivedJson(marketPath, market);
   return written;
+}
+
+async function readInsiderHoldingRaw(rootDir, market, monthKey) {
+  return readJsonIfExists(
+    join(
+      rootDir,
+      'data',
+      'raw',
+      market,
+      'insider_holding',
+      monthKey.slice(0, 4),
+      `${monthKey}.json`,
+    ),
+    null,
+  );
+}
+
+async function readCompanyCapitalTimeline(rootDir, market) {
+  const fields = INSIDER_MARKET_FIELDS[market];
+  const sourceDataset = `${market}/company_capital`;
+  const dates = await listJsonDates(join(rootDir, 'data', 'raw', sourceDataset));
+  const byCompany = new Map();
+  for (const fileDate of dates) {
+    const rows = await readJsonRaw(rootDir, sourceDataset, fileDate);
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      const id = String(row?.[fields.capitalId] ?? '').trim();
+      const date = parseTradingDate(row?.[fields.capitalDate]);
+      const issued = compactNumber(row?.[fields.issued]);
+      if (!id || !date || issued === null) continue;
+      if (!byCompany.has(id)) byCompany.set(id, []);
+      byCompany.get(id).push({ date, issued });
+    }
+  }
+  for (const entries of byCompany.values()) {
+    entries.sort((left, right) => left.date.localeCompare(right.date));
+  }
+  return byCompany;
+}
+
+function capitalAtReportDate(entries, reportDate) {
+  if (!entries?.length || !reportDate) return null;
+  const notAfterReport = entries.filter((entry) => entry.date <= reportDate);
+  return notAfterReport.at(-1) ?? entries[0];
+}
+
+function aggregateInsiderRows(rows) {
+  const companies = new Map();
+  for (const row of rows ?? []) {
+    const id = String(row?.['公司代號'] ?? '').trim();
+    const name = String(row?.['姓名'] ?? '').trim();
+    const reportDate = parseTradingDate(row?.['出表日期']);
+    const holding = compactNumber(row?.['目前持股']);
+    const pledged = compactNumber(row?.['設質股數']);
+    if (!id || !name || !reportDate || holding === null || pledged === null) continue;
+    if (!companies.has(id)) companies.set(id, { reportDate, holders: new Map() });
+    const company = companies.get(id);
+    if (reportDate > company.reportDate) company.reportDate = reportDate;
+    const isDirector = String(row?.['職稱'] ?? '').includes('董事');
+    const holder = company.holders.get(name);
+    if (holder) {
+      holder.isDirector ||= isDirector;
+    } else {
+      company.holders.set(name, { holding, pledged, isDirector });
+    }
+  }
+  return companies;
+}
+
+async function upsertInsider(rootDir, id, row, window) {
+  const path = join(rootDir, 'data', 'derived', 'insider', p2(id), `${id}.json`);
+  const current = await readExistingJson(path, {
+    id,
+    updated: null,
+    cols: INSIDER_COLS,
+    rows: [],
+  });
+  const rows = upsertRows(current.rows ?? [], row, window);
+  return writeDerivedJson(path, {
+    id,
+    updated: monthIntToIso(rows.at(-1)[0]),
+    cols: INSIDER_COLS,
+    rows,
+  });
+}
+
+export async function applyInsiderHoldingMonth(
+  rootDir,
+  monthKey,
+  { insiderWindow = DEFAULT_INSIDER_WINDOW } = {},
+) {
+  const month = Number(monthKey.replace('-', ''));
+  let insider = 0;
+  for (const market of ['twse', 'tpex']) {
+    const rows = await readInsiderHoldingRaw(rootDir, market, monthKey);
+    if (!Array.isArray(rows)) continue;
+    const capitalByCompany = await readCompanyCapitalTimeline(rootDir, market);
+    for (const [id, company] of aggregateInsiderRows(rows)) {
+      const capital = capitalAtReportDate(capitalByCompany.get(id), company.reportDate);
+      if (!capital || capital.issued <= 0) continue;
+      let directorHolding = 0;
+      let directorPledged = 0;
+      let insiderHolding = 0;
+      let insiderPledged = 0;
+      for (const holder of company.holders.values()) {
+        insiderHolding += holder.holding;
+        insiderPledged += holder.pledged;
+        if (holder.isDirector) {
+          directorHolding += holder.holding;
+          directorPledged += holder.pledged;
+        }
+      }
+      const row = [
+        month,
+        round2((directorHolding / capital.issued) * 100),
+        directorHolding === 0 ? null : round2((directorPledged / directorHolding) * 100),
+        round2((insiderHolding / capital.issued) * 100),
+        insiderHolding === 0 ? null : round2((insiderPledged / insiderHolding) * 100),
+        capital.issued,
+      ];
+      if (await upsertInsider(rootDir, id, row, insiderWindow)) insider += 1;
+    }
+  }
+  return { insider };
 }
 
 export async function applyMonthlyRevenue(rootDir, monthKey, { revenueWindow = DEFAULT_REVENUE_WINDOW } = {}) {
