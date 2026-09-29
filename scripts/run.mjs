@@ -13,6 +13,7 @@ import {
 import { daysBetweenIsoDates, parseRocMonth, taipeiIsoDate, yyyyOf } from './lib/date.mjs';
 import {
   applyDailyDate,
+  applyInsiderHoldingMonth,
   applyMacroSeries,
   applyMonthlyRevenue,
   applyTdccWeek,
@@ -548,6 +549,21 @@ export async function runSnapshot({
       .filter((result) => result.cadence === 'monthly' && ['write', 'revise', 'forced'].includes(result.status))
       .map((result) => result.month),
   );
+  const changedInsiderMonthsForDerived = new Set(
+    results
+      .filter((result) => result.key.endsWith('_insider_holding') && ['write', 'revise', 'forced'].includes(result.status))
+      .map((result) => result.month),
+  );
+  const changedCapitalMarkets = new Set(
+    results
+      .filter((result) => result.key.endsWith('_company_capital') && ['write', 'revise', 'forced'].includes(result.status))
+      .map((result) => result.market),
+  );
+  for (const market of changedCapitalMarkets) {
+    const holdingEndpoint = endpointByKey(`${market}_insider_holding`);
+    const latestHoldingMonth = (await storedMonthsForEndpoint(rootDir, holdingEndpoint)).at(-1);
+    if (latestHoldingMonth) changedInsiderMonthsForDerived.add(latestHoldingMonth);
+  }
   const changedTdccWeeksForDerived = results
     .filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status))
     .map((result) => result.date);
@@ -565,6 +581,14 @@ export async function runSnapshot({
       console.log(`[derived] monthly ${month}: fundamentals=${derived.fundamentals}`);
     } catch (error) {
       console.error(`[error] derived monthly ${month}: ${error?.stack ?? error}`);
+    }
+  }
+  for (const month of [...changedInsiderMonthsForDerived].sort()) {
+    try {
+      const derived = await applyInsiderHoldingMonth(rootDir, month);
+      console.log(`[derived] insider ${month}: files=${derived.insider}`);
+    } catch (error) {
+      console.error(`[error] derived insider ${month}: ${error?.stack ?? error}`);
     }
   }
   for (const date of changedTdccWeeksForDerived.sort()) {

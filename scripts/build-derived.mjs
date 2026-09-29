@@ -2,6 +2,7 @@ import { rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   applyDailyDate,
+  applyInsiderHoldingMonth,
   applyMacroSeries,
   applyMonthlyRevenue,
   applyQuarterlyFinancials,
@@ -36,6 +37,11 @@ const MONTHLY_SOURCES = [
   { sourceDataset: 'tpex/monthly_revenue', listMonths: listJsonMonths },
   { sourceDataset: 'twse/monthly_revenue_hist', listMonths: listHtmlMonths },
   { sourceDataset: 'tpex/monthly_revenue_hist', listMonths: listHtmlMonths },
+];
+
+const INSIDER_MONTHLY_SOURCES = [
+  'twse/insider_holding',
+  'tpex/insider_holding',
 ];
 
 const QUARTERLY_SOURCES = [
@@ -165,6 +171,17 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     await applyMonthlyRevenue(rootDir, month);
   }
 
+  const insiderMonths = new Set();
+  for (const source of INSIDER_MONTHLY_SOURCES) {
+    for (const month of await listJsonMonths(join(rootDir, 'data', 'raw', source))) {
+      insiderMonths.add(month);
+    }
+  }
+  const sortedInsiderMonths = [...insiderMonths].sort();
+  for (const month of sortedInsiderMonths) {
+    await applyInsiderHoldingMonth(rootDir, month);
+  }
+
   const quarterlySeasons = new Set();
   for (const source of QUARTERLY_SOURCES) {
     for (const season of await listHtmlSeasons(join(rootDir, 'data', 'raw', source))) {
@@ -190,6 +207,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     taifexForeignFuturesMonths: taifexForeignFuturesMonths.length,
     taifexVixMonths: taifexVixMonths.length,
     monthlyMonths: sortedMonthlyMonths.length,
+    insiderMonths: sortedInsiderMonths.length,
     quarterlySeasons: sortedQuarterlySeasons.length,
     tdccWeeks: weeks.length,
     macroSeries: macro.series,
@@ -200,7 +218,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} insider_months=${summary.insiderMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);
