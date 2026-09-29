@@ -153,6 +153,7 @@ function normalizeSnapshotManifest(input) {
   }
   manifest.paths.rawMonthly = 'data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json';
   manifest.paths.fundamentals = 'data/derived/fundamentals/{p2}/{id}.json';
+  manifest.paths.insider = 'data/derived/insider/{p2}/{id}.json';
   return manifest;
 }
 

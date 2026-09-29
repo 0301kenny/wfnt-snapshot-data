@@ -297,6 +297,7 @@ test('first run writes raw paths and manifest contract with seventeen datasets',
     assert.equal(m.paths.tdcc, 'data/derived/tdcc/{p2}/{id}.json');
     assert.equal(m.paths.market, 'data/derived/market.json');
     assert.equal(m.paths.fundamentals, 'data/derived/fundamentals/{p2}/{id}.json');
+    assert.equal(m.paths.insider, 'data/derived/insider/{p2}/{id}.json');
   });
 });
 
