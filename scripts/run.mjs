@@ -12,6 +12,7 @@ import {
 } from './endpoints.mjs';
 import { daysBetweenIsoDates, parseRocMonth, taipeiIsoDate, yyyyOf } from './lib/date.mjs';
 import {
+  applyCapitalEvents,
   applyDailyDate,
   applyInsiderHoldingMonth,
   applyMacroSeries,
@@ -154,6 +155,7 @@ function normalizeSnapshotManifest(input) {
   manifest.paths.rawMonthly = 'data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json';
   manifest.paths.fundamentals = 'data/derived/fundamentals/{p2}/{id}.json';
   manifest.paths.insider = 'data/derived/insider/{p2}/{id}.json';
+  manifest.paths.capitalEvents = 'data/derived/capital_events.json';
   return manifest;
 }
 
@@ -590,6 +592,14 @@ export async function runSnapshot({
       console.log(`[derived] insider ${month}: files=${derived.insider}`);
     } catch (error) {
       console.error(`[error] derived insider ${month}: ${error?.stack ?? error}`);
+    }
+  }
+  if (changedCapitalMarkets.size > 0) {
+    try {
+      const derived = await applyCapitalEvents(rootDir);
+      console.log(`[derived] capital events: rows=${derived.capitalEvents} file=${derived.written ? 'write' : 'same'}`);
+    } catch (error) {
+      console.error(`[error] derived capital events: ${error?.stack ?? error}`);
     }
   }
   for (const date of changedTdccWeeksForDerived.sort()) {
