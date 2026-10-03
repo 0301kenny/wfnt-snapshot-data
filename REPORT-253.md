@@ -81,3 +81,44 @@ tests 164; pass 164; fail 0
 - 未打網路、未執行 repo 根目錄的 `build-derived`、未對真實 `data/` 呼叫新投影函式，也未修改真實 `data/`。
 - 未修改 Out of Scope 檔案，未修改或刪除既有 `REPORT-070/189/192/194.md`。
 - 未 commit、未 merge、未 rebase、未修改票面；未觸發任何 Stop / Escalate 條款。
+
+## a2
+
+### 狀態
+
+`READY_FOR_REVIEW`
+
+### 改動說明
+
+- `applyCapitalEvents` 現在只在快照至少包含一列有效資料時，才把該快照視為有效並推進 `updated`。有效資料仍須同時滿足公司代號通過 `isDerivedSymbolId`、股數可解析且大於 0。
+- 全部列均無效的快照直接略過，不會改動既有的 `lastValidById`；因此既有「最後一次有效出現」追蹤語意不變。
+- 新增兩條測試：兩市場僅有無效快照時回傳 `{ capitalEvents: 0, written: false }` 且不產生檔案；有效快照後接無效快照時，手算斷言 `updated` 固定為有效快照日期 `2026-08-01`。
+- 未處理 reviewer 提出的上市／上櫃同代號跨市場追蹤；依 Orchestrator 裁決維持 deferred。
+
+### 消融證據
+
+基準綠：
+
+```text
+node --test tests/
+tests 164; pass 164; fail 0
+```
+
+暫時拿掉新增的 `if (snapshot.size === 0) continue;`，只跑兩條 a2 測試，結果為 2 tests / 0 pass / 2 fail；其中一行失敗訊息：
+
+```text
+Expected written: false; actual: true (later invalid snapshot also changed updated from 2026-08-01 to 2026-08-02)
+```
+
+立即還原守門後：
+
+```text
+node --test --test-name-pattern='all invalid|later snapshot' tests/capital-events.test.mjs
+tests 2; pass 2; fail 0
+```
+
+### 全套測試前後
+
+- a2 改前：`node --test tests/` = 164 tests / 164 pass / 0 fail。
+- a2 改後：`node --test tests/` = 166 tests / 166 pass / 0 fail。
+- a1 新增的 3 條測試及所有其他既有測試均未修改。

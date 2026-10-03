@@ -83,3 +83,36 @@ test('capital events do not write an output without a valid snapshot', async () 
     await assert.rejects(access(join(root, 'data', 'derived', 'capital_events.json')));
   });
 });
+
+test('capital events ignore snapshots whose rows are all invalid', async () => {
+  await withTempDir(async (root) => {
+    await writeSnapshot(root, 'twse', '2026-08-01', [
+      { '公司代號': '123456', '已發行普通股數或TDR原股發行股數': '100' },
+    ]);
+    await writeSnapshot(root, 'tpex', '2026-08-02', [
+      { SecuritiesCompanyCode: '6488', IssueShares: '--' },
+    ]);
+
+    assert.deepEqual(await applyCapitalEvents(root), { capitalEvents: 0, written: false });
+    await assert.rejects(access(join(root, 'data', 'derived', 'capital_events.json')));
+  });
+});
+
+test('capital events updated date ignores a later snapshot with no valid rows', async () => {
+  await withTempDir(async (root) => {
+    await writeSnapshot(root, 'twse', '2026-08-01', [
+      { '公司代號': '2330', '已發行普通股數或TDR原股發行股數': '1,000' },
+    ]);
+    await writeSnapshot(root, 'tpex', '2026-08-02', [
+      { SecuritiesCompanyCode: '654321', IssueShares: '200' },
+      { SecuritiesCompanyCode: '6488', IssueShares: '--' },
+    ]);
+
+    assert.deepEqual(await applyCapitalEvents(root), { capitalEvents: 0, written: true });
+    assert.deepEqual(JSON.parse(await readFile(join(root, 'data', 'derived', 'capital_events.json'), 'utf8')), {
+      updated: '2026-08-01',
+      cols: ['id', 'from', 'to', 'before', 'after'],
+      rows: [],
+    });
+  });
+});

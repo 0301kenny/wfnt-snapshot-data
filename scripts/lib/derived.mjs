@@ -844,7 +844,6 @@ export async function applyCapitalEvents(rootDir) {
     for (const date of dates) {
       const rawRows = await readJsonRaw(rootDir, sourceDataset, date);
       if (!Array.isArray(rawRows)) continue;
-      if (updated === null || date > updated) updated = date;
       const snapshot = new Map();
       for (const rawRow of rawRows) {
         const id = String(rawRow?.[fields.capitalId] ?? '').trim();
@@ -852,6 +851,8 @@ export async function applyCapitalEvents(rootDir) {
         if (!isDerivedSymbolId(id) || issued === null || issued <= 0) continue;
         snapshot.set(id, issued);
       }
+      if (snapshot.size === 0) continue;
+      if (updated === null || date > updated) updated = date;
       for (const [id, issued] of snapshot) {
         const previous = lastValidById.get(id);
         if (previous && previous.issued !== issued) {
