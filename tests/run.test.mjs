@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
@@ -660,6 +660,48 @@ test('build-derived rebuild matches incremental output and repeated rebuild is b
     assert.deepEqual(rebuilt, incremental);
     await buildDerived({ rootDir: root });
     assert.deepEqual(await fileMap(join(root, 'data', 'derived')), rebuilt);
+  });
+});
+
+test('capital events reach the daily path and rebuild byte-identically', async () => {
+  await withTempDir(async (root) => {
+    const firstDay = fixtureBodies({
+      twse_mi_index: jsonBody([{ '日期': '1150706', '指數': '寶島股價指數', '收盤指數': '1' }]),
+      twse_company_capital: jsonBody([
+        { '出表日期': '1150706', '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '1,000' },
+      ]),
+    });
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(firstDay),
+      datasets: ['twse_company_capital'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    const secondDay = fixtureBodies({
+      twse_mi_index: jsonBody([{ '日期': '1150707', '指數': '寶島股價指數', '收盤指數': '1' }]),
+      twse_company_capital: jsonBody([
+        { '出表日期': '1150707', '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '1,200' },
+      ]),
+    });
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(secondDay),
+      datasets: ['twse_company_capital'],
+      now: () => new Date('2026-07-07T13:45:00Z'),
+    });
+
+    const path = join(root, 'data', 'derived', 'capital_events.json');
+    await access(path);
+    assert.deepEqual((await readJson(root, 'data/derived/capital_events.json')).rows, [
+      ['2330', 20260706, 20260707, 1000, 1200],
+    ]);
+    assert.equal((await manifest(root)).paths.capitalEvents, 'data/derived/capital_events.json');
+    const incremental = await readFile(path);
+
+    await rm(join(root, 'data', 'derived'), { recursive: true, force: true });
+    const summary = await buildDerived({ rootDir: root });
+    assert.equal(summary.capitalEvents, 1);
+    assert.deepEqual(await readFile(path), incremental);
   });
 });
 

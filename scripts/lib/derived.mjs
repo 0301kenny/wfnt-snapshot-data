@@ -42,6 +42,7 @@ const TAIFEX_PCR_COLS = ['d', 'vol', 'oi'];
 const TAIFEX_FUT_COLS = ['d', 'net'];
 const TAIFEX_VIX_COLS = ['d', 'vix'];
 const INSIDER_COLS = ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'];
+const CAPITAL_EVENT_COLS = ['id', 'from', 'to', 'before', 'after'];
 const INSIDER_MARKET_FIELDS = Object.freeze({
   twse: Object.freeze({
     capitalId: '公司代號',
@@ -830,6 +831,43 @@ export async function applyMacroSeries(rootDir) {
     { series },
   );
   return { series: count, written };
+}
+
+export async function applyCapitalEvents(rootDir) {
+  const events = [];
+  let updated = null;
+  for (const market of ['twse', 'tpex']) {
+    const fields = INSIDER_MARKET_FIELDS[market];
+    const sourceDataset = `${market}/company_capital`;
+    const dates = await listJsonDates(join(rootDir, 'data', 'raw', sourceDataset));
+    const lastValidById = new Map();
+    for (const date of dates) {
+      const rawRows = await readJsonRaw(rootDir, sourceDataset, date);
+      if (!Array.isArray(rawRows)) continue;
+      if (updated === null || date > updated) updated = date;
+      const snapshot = new Map();
+      for (const rawRow of rawRows) {
+        const id = String(rawRow?.[fields.capitalId] ?? '').trim();
+        const issued = compactNumber(rawRow?.[fields.issued]);
+        if (!isDerivedSymbolId(id) || issued === null || issued <= 0) continue;
+        snapshot.set(id, issued);
+      }
+      for (const [id, issued] of snapshot) {
+        const previous = lastValidById.get(id);
+        if (previous && previous.issued !== issued) {
+          events.push([id, isoToInt(previous.date), isoToInt(date), previous.issued, issued]);
+        }
+        lastValidById.set(id, { date, issued });
+      }
+    }
+  }
+  if (updated === null) return { capitalEvents: 0, written: false };
+  events.sort((left, right) => left[0].localeCompare(right[0]) || left[2] - right[2]);
+  const written = await writeDerivedJson(
+    join(rootDir, 'data', 'derived', 'capital_events.json'),
+    { updated, cols: CAPITAL_EVENT_COLS, rows: events },
+  );
+  return { capitalEvents: events.length, written };
 }
 
 function updatedFromRows(rows) {

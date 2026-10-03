@@ -1,6 +1,7 @@
 import { rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  applyCapitalEvents,
   applyDailyDate,
   applyInsiderHoldingMonth,
   applyMacroSeries,
@@ -182,6 +183,8 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     await applyInsiderHoldingMonth(rootDir, month);
   }
 
+  const capitalEvents = await applyCapitalEvents(rootDir);
+
   const quarterlySeasons = new Set();
   for (const source of QUARTERLY_SOURCES) {
     for (const season of await listHtmlSeasons(join(rootDir, 'data', 'raw', source))) {
@@ -208,6 +211,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     taifexVixMonths: taifexVixMonths.length,
     monthlyMonths: sortedMonthlyMonths.length,
     insiderMonths: sortedInsiderMonths.length,
+    capitalEvents: capitalEvents.capitalEvents,
     quarterlySeasons: sortedQuarterlySeasons.length,
     tdccWeeks: weeks.length,
     macroSeries: macro.series,
@@ -218,7 +222,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} insider_months=${summary.insiderMonths} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} insider_months=${summary.insiderMonths} capital_events=${summary.capitalEvents} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);
