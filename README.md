@@ -31,7 +31,7 @@ data/raw/{source_dataset}/{yyyy}/{date}.json
 
 Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、不過濾。`data/manifest.json` 只在資料或狀態實際變更時改寫;同日 no-op 重跑不得產生 diff。
 
-`twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日。
+`twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日,且不納入 `latestTradingDate`。
 
 ## Current-only insider and company snapshots
 
@@ -44,7 +44,7 @@ Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、�
 - `twse_company_capital`（日更，`t187ap03_L`）
 - `tpex_company_capital`（日更，`mopsfin_t187ap03_O`）
 
-這六支端點沒有歷史回補與 derived 轉換。月更持股 raw 使用月頻路徑，四支日更 raw 使用一般日頻路徑；上市與上櫃的欄名逐端點獨立驗證，不假設跨市場一致。
+這六支端點都沒有歷史回補,也不納入 `latestTradingDate`。月更持股會產生 `data/derived/insider/`,股本會投影到 `data/derived/capital_events.json` 並供 insider 計算使用,insider transfer 則沒有 derived 轉換。月更持股 raw 使用月頻路徑,四支日更 raw 使用一般日頻路徑；上市與上櫃的欄名逐端點獨立驗證,不假設跨市場一致。
 
 ## TWSE/TPEX daily historical backfill
 

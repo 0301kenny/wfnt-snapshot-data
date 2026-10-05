@@ -1159,3 +1159,99 @@ test('monthly revenue warns and deterministically drops rows outside the raw mon
     await assert.rejects(readFile(join(root, 'data', 'derived', 'fundamentals', '23', '2303.json')));
   });
 });
+
+test('weekend report dates do not advance latestTradingDate', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies()),
+      datasets: [
+        'twse_mi_index',
+        'twse_stock_day_all',
+        'twse_mi_margn',
+        'tpex_index',
+        'tpex_mainboard_close',
+        'tpex_3insti',
+        'tpex_margin',
+      ],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+
+    const weekendBodies = fixtureBodies({
+      twse_insider_transfer: jsonBody([{ '出表日期': '1150711', '公司代號': '2330', '申報人身分': '董事', '預定轉讓方式及股數-轉讓股數': '1' }]),
+      tpex_insider_transfer: jsonBody([{ Date: '1150712', SecuritiesCompanyCode: '6488', '申請人身分': '董事', '預定轉讓方式及股數-轉讓股數': '1' }]),
+      twse_company_capital: jsonBody([{ '出表日期': '1150711', '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '1' }]),
+      tpex_company_capital: jsonBody([{ Date: '1150712', SecuritiesCompanyCode: '6488', 'Paidin.Capital.NTDollars': '1', IssueShares: '1' }]),
+    });
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(weekendBodies),
+      datasets: [
+        'twse_insider_transfer',
+        'tpex_insider_transfer',
+        'twse_company_capital',
+        'tpex_company_capital',
+      ],
+      now: () => new Date('2026-07-12T13:45:00Z'),
+    });
+
+    const m = await manifest(root);
+    assert.equal(m.datasets.twse_insider_transfer.latest, '2026-07-11');
+    assert.equal(m.datasets.tpex_insider_transfer.latest, '2026-07-12');
+    assert.equal(m.datasets.twse_company_capital.latest, '2026-07-11');
+    assert.equal(m.datasets.tpex_company_capital.latest, '2026-07-12');
+    assert.equal(m.latestTradingDate, '2026-07-06');
+  });
+});
+
+test('a later run repairs a weekend-polluted latestTradingDate without rewriting company capital latest', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies()),
+      datasets: ['twse_mi_index', 'tpex_index', 'twse_company_capital'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+
+    const polluted = await manifest(root);
+    polluted.latestTradingDate = '2026-07-11';
+    polluted.datasets.twse_company_capital.latest = '2026-07-11';
+    await writeFile(join(root, 'data', 'manifest.json'), `${JSON.stringify(polluted, null, 2)}\n`);
+
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies()),
+      datasets: ['tpex_index'],
+      now: () => new Date('2026-07-07T13:45:00Z'),
+    });
+
+    const repaired = await manifest(root);
+    assert.equal(repaired.datasets.twse_company_capital.latest, '2026-07-11');
+    assert.equal(repaired.latestTradingDate, '2026-07-06');
+  });
+});
+
+test('a newer TPEX core trading date advances latestTradingDate while TWSE remains unchanged', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies()),
+      datasets: ['twse_mi_index', 'twse_stock_day_all', 'twse_mi_margn', 'tpex_index'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        tpex_index: jsonBody([{ Date: '20260707', Open: '1', High: '1', Low: '1', Close: '1' }]),
+      })),
+      datasets: ['tpex_index'],
+      now: () => new Date('2026-07-07T13:45:00Z'),
+    });
+
+    const m = await manifest(root);
+    assert.equal(m.datasets.twse_mi_index.latest, '2026-07-06');
+    assert.equal(m.datasets.tpex_index.latest, '2026-07-07');
+    assert.equal(m.latestTradingDate, '2026-07-07');
+  });
+});

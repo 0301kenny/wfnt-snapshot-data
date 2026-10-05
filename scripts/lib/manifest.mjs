@@ -85,7 +85,7 @@ export function setSeriesDatasetSuccess(manifest, key, dates) {
 }
 
 export function refreshLatestTradingDate(manifest) {
-  manifest.latestTradingDate = maxIsoDate(Object.values(manifest.datasets).map((entry) => entry.latest));
+  manifest.latestTradingDate = maxIsoDate(DATASET_KEYS.map((key) => manifest.datasets[key]?.latest));
 }
 
 export function stableManifestString(manifest) {
