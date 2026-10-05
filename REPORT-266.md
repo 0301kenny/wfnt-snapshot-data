@@ -1,4 +1,4 @@
-# READY_FOR_REVIEW
+# READY_FOR_REVIEW (a2)
 
 ## 1. 設計與實作
 
@@ -90,3 +90,32 @@ index 8abf896..331d725 100644
 - 未在 repo 根目錄執行 `scripts/run.mjs` 或 `build-derived`。
 - 未修改 Scope 外檔案、未修改既有測試、未讀取 `orchestrator-ref.patch`、未 commit。
 - 歷史遺留的 untracked `REPORT-070.md`、`REPORT-189.md`、`REPORT-192.md`、`REPORT-194.md` 均未修改或刪除。
+
+## a2 修正
+
+### 修改內容
+
+- `scripts/lib/manifest.mjs:14` 新增具名白名單 `TRADING_DATE_DATASET_KEYS = [...DATASET_KEYS, 'twse_bwibbu_all']`；`:90` 的 `refreshLatestTradingDate` 只讀這個白名單。既有 `DATASET_KEYS` 核心交易資料加上以全列 `Date` 取得交易日的 `twse_bwibbu_all`，而 current-only 出表資料仍預設排除。
+- `README.md:34` 改為說明 `twse_bwibbu_all` 納入 `latestTradingDate`，日期取自全列 `Date` 且為交易日；`:47` 的 Current-only 六支端點「不納入」敘述維持不變。
+- `tests/run.test.mjs:1259` 起只在檔尾新增兩條測試，a1 三條及其他既有測試未修改：
+  - 全新 root 只跑 `twse_bwibbu_all`，fixture `Date = 1150706`，斷言 `latestTradingDate = '2026-07-06'`。
+  - 全新 root 只跑 `twse_company_capital`，fixture `出表日期 = 1150711`，斷言資料集 `latest = '2026-07-11'` 且 `latestTradingDate = null`。
+
+### 消融證據
+
+先以正式白名單執行 a1 三條加 a2 兩條指定測試：exit 0；5 tests / 5 pass / 0 fail。
+
+1. 退回掃描全部 `manifest.datasets`：a1 驗收 1、2 皆紅，exit 1；2 tests / 0 pass / 2 fail；actual 分別為 `2026-07-12`、`2026-07-11`，expected 均為 `2026-07-06`。
+2. 白名單加入兩市場 `company_capital`：a1 驗收 1、2 皆紅，exit 1；2 tests / 0 pass / 2 fail；actual 分別為 `2026-07-12`、`2026-07-11`。同一消融另跑 a1 週末測試與 a2 company-capital-only 測試：2 tests / 0 pass / 2 fail，後者 actual `2026-07-11`、expected `null`。
+3. 白名單加入兩市場 `insider_transfer`：a1 驗收 1 紅，exit 1；1 test / 0 pass / 1 fail；actual `2026-07-12`、expected `2026-07-06`。
+4. 白名單只取 `twse_` 資料集：a1 驗收 3 紅，exit 1；1 test / 0 pass / 1 fail；actual `2026-07-06`、expected `2026-07-07`。
+5. 白名單拿掉 `twse_bwibbu_all`：a2 第一條新測試紅，exit 1；1 test / 0 pass / 1 fail；actual `null`、expected `2026-07-06`。
+6. 白名單加入兩市場 `company_capital`：a2 第二條新測試與 a1 週末測試皆紅，exit 1；2 tests / 0 pass / 2 fail；actual 分別為 `2026-07-11`、`2026-07-12`。
+
+最後還原正式白名單再跑五條指定測試：exit 0；5 tests / 5 pass / 0 fail。
+
+### 完整測試與邊界
+
+- 改前（a1 head `92d8053`）：`node --test tests/` → 169 tests / 169 pass / 0 fail / 0 skipped。
+- 改後：`node --test tests/` → 171 tests / 171 pass / 0 fail / 0 skipped。
+- 全程只使用 fixture，未打網路；未修改真實 `data/`，未在 repo 根目錄執行 `run.mjs` 或 `build-derived`，未 commit。

@@ -1255,3 +1255,40 @@ test('a newer TPEX core trading date advances latestTradingDate while TWSE remai
     assert.equal(m.latestTradingDate, '2026-07-07');
   });
 });
+
+test('twse bwibbu alone sets latestTradingDate from its trading-date rows', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        twse_bwibbu_all: jsonBody([
+          { Date: '1150706', Code: '2330', Name: '台積電', PEratio: '26', PBratio: '5', DividendYield: '2' },
+        ]),
+      })),
+      datasets: ['twse_bwibbu_all'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+
+    const m = await manifest(root);
+    assert.equal(m.latestTradingDate, '2026-07-06');
+  });
+});
+
+test('company capital alone keeps its weekend latest without setting latestTradingDate', async () => {
+  await withTempDir(async (root) => {
+    await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        twse_company_capital: jsonBody([
+          { '出表日期': '1150711', '公司代號': '2330', '實收資本額': '1', '已發行普通股數或TDR原股發行股數': '1' },
+        ]),
+      })),
+      datasets: ['twse_company_capital'],
+      now: () => new Date('2026-07-11T13:45:00Z'),
+    });
+
+    const m = await manifest(root);
+    assert.equal(m.datasets.twse_company_capital.latest, '2026-07-11');
+    assert.equal(m.latestTradingDate, null);
+  });
+});

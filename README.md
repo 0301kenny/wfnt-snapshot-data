@@ -31,7 +31,7 @@ data/raw/{source_dataset}/{yyyy}/{date}.json
 
 Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、不過濾。`data/manifest.json` 只在資料或狀態實際變更時改寫;同日 no-op 重跑不得產生 diff。
 
-`twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日,且不納入 `latestTradingDate`。
+`twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日,且納入 `latestTradingDate`（日期取自全列 `Date`,為交易日）。
 
 ## Current-only insider and company snapshots
 
