@@ -11,6 +11,8 @@ export const DATASET_KEYS = [
   'tdcc',
 ];
 
+export const TRADING_DATE_DATASET_KEYS = [...DATASET_KEYS, 'twse_bwibbu_all'];
+
 export function emptyDatasetEntry() {
   return { first: null, latest: null, days: 0, ok: false };
 }
@@ -85,7 +87,7 @@ export function setSeriesDatasetSuccess(manifest, key, dates) {
 }
 
 export function refreshLatestTradingDate(manifest) {
-  manifest.latestTradingDate = maxIsoDate(Object.values(manifest.datasets).map((entry) => entry.latest));
+  manifest.latestTradingDate = maxIsoDate(TRADING_DATE_DATASET_KEYS.map((key) => manifest.datasets[key]?.latest));
 }
 
 export function stableManifestString(manifest) {
