@@ -4,7 +4,7 @@ TW Stock Radar 的每日官方開放資料快照服務。
 
 - 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE/TPEX legacy 與 MOPS 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。
-- `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 12 個日更端點與 4 個月更端點,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
+- `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 12 個日更端點、4 個月更端點與 2 個除權息年度資料集,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
 
 ## Daily snapshot
 
@@ -32,6 +32,30 @@ data/raw/{source_dataset}/{yyyy}/{date}.json
 Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、不過濾。`data/manifest.json` 只在資料或狀態實際變更時改寫;同日 no-op 重跑不得產生 diff。
 
 `twse_bwibbu_all` 是上市個股估值日更資料,以全列 `Date` 最大值決定 raw 日期,不作 anchor;列日期不可用時才 fallback 到 TWSE anchor 日,且納入 `latestTradingDate`（日期取自全列 `Date`,為交易日）。
+
+## Annual ex-right snapshot
+
+除權息年度資料集:
+
+- `twse_ex_right`（TWSE `TWT49U`）
+- `tpex_ex_right`（TPEX `exDailyQ`）
+
+兩個資料集從 2021 年開始,每市場每個日曆年保留一份官方 JSON 原始 bytes:
+
+```text
+data/raw/twse/ex_right/{yyyy}/{yyyy}.json
+data/raw/tpex/ex_right/{yyyy}/{yyyy}.json
+```
+
+歷史年度檔存在即略過,台北時間當年度則每次執行重抓 1 月 1 日至今天,內容相同時不改寫。只有無效 JSON 或 TPEX `data.length < totalCount` 的截斷回應會重試；HTTP 與 fetch 錯誤立即失敗。同一市場失敗後不再抓後續年度,另一市場仍獨立執行。兩次同市場請求之間預設間隔 3000 ms。
+
+通過驗證的兩市場年度 raw 會全量整理為每檔一份序列:
+
+```text
+data/derived/corporate_actions/{p2}/{id}.json
+```
+
+每列為 `['d', 'pre', 'ref', 'kind']`,日期正規化為 ISO,價格轉為數字,種類統一為 `權`／`息`／`權息`。這兩個年度資料集不納入 `latestTradingDate`;日常寫入與 `scripts/build-derived.mjs` 全量重建共用同一個轉換函式。
 
 ## Current-only insider and company snapshots
 
@@ -202,6 +226,7 @@ Derived 代號分桶:
 data/derived/symbols/{p2}/{id}.json
 data/derived/tdcc/{p2}/{id}.json
 data/derived/fundamentals/{p2}/{id}.json
+data/derived/corporate_actions/{p2}/{id}.json
 data/derived/market.json
 data/derived/macro.json
 ```

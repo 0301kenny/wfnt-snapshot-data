@@ -2,7 +2,8 @@ import { readFile, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import { SERIES_ENDPOINTS } from '../endpoints.mjs';
-import { parseGregorianDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
+import { parseGregorianDate, parseRocDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
+import { exRightRawPath, listExRightYears } from './ex-right.mjs';
 import { listJsonDates, readJsonIfExists, writeFileEnsured } from './io.mjs';
 import { decodeTaifexBig5Csv } from './taifex-monthly-backfill.mjs';
 
@@ -43,6 +44,7 @@ const TAIFEX_FUT_COLS = ['d', 'net'];
 const TAIFEX_VIX_COLS = ['d', 'vix'];
 const INSIDER_COLS = ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'];
 const CAPITAL_EVENT_COLS = ['id', 'from', 'to', 'before', 'after'];
+const CORPORATE_ACTION_COLS = ['d', 'pre', 'ref', 'kind'];
 const INSIDER_MARKET_FIELDS = Object.freeze({
   twse: Object.freeze({
     capitalId: '公司代號',
@@ -869,6 +871,103 @@ export async function applyCapitalEvents(rootDir) {
     { updated, cols: CAPITAL_EVENT_COLS, rows: events },
   );
   return { capitalEvents: events.length, written };
+}
+
+function parseTwseCorporateActionDate(value) {
+  const match = String(value ?? '').trim().match(/^(\d{3})年(\d{1,2})月(\d{1,2})日$/);
+  if (!match) return null;
+  return parseRocDate(`${match[1]}/${match[2]}/${match[3]}`);
+}
+
+async function listCorporateActionPaths(rootDir) {
+  const dir = join(rootDir, 'data', 'derived', 'corporate_actions');
+  try {
+    const buckets = await readdir(dir, { withFileTypes: true });
+    const paths = [];
+    for (const bucket of buckets) {
+      if (!bucket.isDirectory()) continue;
+      const files = await readdir(join(dir, bucket.name), { withFileTypes: true });
+      for (const file of files) {
+        if (file.isFile() && file.name.endsWith('.json')) paths.push(join(dir, bucket.name, file.name));
+      }
+    }
+    return paths.sort();
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+function corporateActionRows(raw, market) {
+  const table = market === 'twse' ? raw : raw?.tables?.[0];
+  const fields = table?.fields;
+  const data = table?.data;
+  if (!Array.isArray(fields) || !Array.isArray(data)) return [];
+  const names = market === 'twse'
+    ? {
+        date: '資料日期',
+        id: '股票代號',
+        pre: '除權息前收盤價',
+        ref: '除權息參考價',
+        kind: '權/息',
+      }
+    : {
+        date: '除權息日期',
+        id: '代號',
+        pre: '除權息前收盤價',
+        ref: '除權息參考價',
+        kind: '權/息',
+      };
+  const indexes = Object.fromEntries(Object.entries(names).map(([key, name]) => [key, fields.indexOf(name)]));
+  if (Object.values(indexes).some((index) => index < 0)) return [];
+  const rows = [];
+  for (const cells of data) {
+    if (!Array.isArray(cells)) continue;
+    const id = String(cells[indexes.id] ?? '').trim();
+    const date = market === 'twse'
+      ? parseTwseCorporateActionDate(cells[indexes.date])
+      : parseRocDate(cells[indexes.date]);
+    const pre = compactNumber(cells[indexes.pre]);
+    const ref = compactNumber(cells[indexes.ref]);
+    const kind = String(cells[indexes.kind] ?? '').trim().replace(/^除/, '');
+    if (!isDerivedSymbolId(id) || !date || pre === null || ref === null
+      || !['權', '息', '權息'].includes(kind)) continue;
+    rows.push({ id, date, row: [date, pre, ref, kind] });
+  }
+  return rows;
+}
+
+export async function applyCorporateActions(rootDir) {
+  const byId = new Map();
+  for (const market of ['twse', 'tpex']) {
+    for (const year of await listExRightYears(rootDir, market)) {
+      const raw = JSON.parse(await readFile(exRightRawPath(rootDir, market, year), 'utf8'));
+      for (const item of corporateActionRows(raw, market)) {
+        if (!byId.has(item.id)) byId.set(item.id, new Map());
+        byId.get(item.id).set(item.date, item.row);
+      }
+    }
+  }
+
+  let written = 0;
+  const desiredPaths = new Set();
+  for (const id of [...byId.keys()].sort()) {
+    const rows = [...byId.get(id).values()].sort((left, right) => left[0].localeCompare(right[0]));
+    const path = join(rootDir, 'data', 'derived', 'corporate_actions', p2(id), `${id}.json`);
+    desiredPaths.add(path);
+    if (await writeDerivedJson(path, {
+      id,
+      updated: rows.at(-1)[0],
+      cols: CORPORATE_ACTION_COLS,
+      rows,
+    })) written += 1;
+  }
+  for (const path of await listCorporateActionPaths(rootDir)) {
+    if (desiredPaths.has(path)) continue;
+    await rm(path);
+    written += 1;
+  }
+  return { corporateActions: byId.size, written };
 }
 
 function updatedFromRows(rows) {

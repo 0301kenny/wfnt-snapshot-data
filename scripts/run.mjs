@@ -13,6 +13,7 @@ import {
 import { daysBetweenIsoDates, parseRocMonth, taipeiIsoDate, yyyyOf } from './lib/date.mjs';
 import {
   applyCapitalEvents,
+  applyCorporateActions,
   applyDailyDate,
   applyInsiderHoldingMonth,
   applyMacroSeries,
@@ -20,6 +21,7 @@ import {
   applyTdccWeek,
   parseFredCsv,
 } from './lib/derived.mjs';
+import { EX_RIGHT_DATASET_KEYS, fetchExRightDataset } from './lib/ex-right.mjs';
 import { sha256Hex } from './lib/hash.mjs';
 import { listCsvGzDates, listJsonDates, readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
 import {
@@ -111,9 +113,15 @@ function parseCli(argv) {
 
 function selectedEndpointKeys(datasetInput) {
   if (!datasetInput || datasetInput.length === 0) {
-    return new Set([...ENDPOINTS, ...SERIES_ENDPOINTS].map((endpoint) => endpoint.key));
+    return new Set([
+      ...ENDPOINTS.map((endpoint) => endpoint.key),
+      ...SERIES_ENDPOINTS.map((endpoint) => endpoint.key),
+      ...EX_RIGHT_DATASET_KEYS,
+    ]);
   }
-  const unknown = datasetInput.filter((key) => !endpointByKey(key) && !seriesEndpointByKey(key));
+  const unknown = datasetInput.filter((key) => (
+    !endpointByKey(key) && !seriesEndpointByKey(key) && !EX_RIGHT_DATASET_KEYS.includes(key)
+  ));
   if (unknown.length > 0) throw new Error(`unknown dataset(s): ${unknown.join(',')}`);
   return new Set(datasetInput);
 }
@@ -152,10 +160,23 @@ function normalizeSnapshotManifest(input) {
       delete manifest.datasets[endpoint.key].lastError;
     }
   }
+  for (const key of EX_RIGHT_DATASET_KEYS) {
+    manifest.datasets[key] = {
+      first: null,
+      latest: null,
+      years: 0,
+      ok: false,
+      ...(input?.datasets?.[key] ?? {}),
+    };
+    if (manifest.datasets[key].lastError === undefined) {
+      delete manifest.datasets[key].lastError;
+    }
+  }
   manifest.paths.rawMonthly = 'data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json';
   manifest.paths.fundamentals = 'data/derived/fundamentals/{p2}/{id}.json';
   manifest.paths.insider = 'data/derived/insider/{p2}/{id}.json';
   manifest.paths.capitalEvents = 'data/derived/capital_events.json';
+  manifest.paths.corporateActions = 'data/derived/corporate_actions/{p2}/{id}.json';
   return manifest;
 }
 
@@ -394,6 +415,8 @@ export async function runSnapshot({
   datasets = null,
   force = false,
   now = () => new Date(),
+  exRightDelayMs = 3000,
+  exRightSleep,
 } = {}) {
   const selected = selectedEndpointKeys(datasets);
   const explicitTdcc = datasets?.includes('tdcc') ?? false;
@@ -402,6 +425,7 @@ export async function runSnapshot({
   const manifest = normalizeSnapshotManifest(JSON.parse(oldManifestString));
   const endpointsToWrite = ENDPOINTS.filter((endpoint) => selected.has(endpoint.key));
   const seriesEndpointsToWrite = SERIES_ENDPOINTS.filter((endpoint) => selected.has(endpoint.key));
+  const exRightKeysToWrite = EX_RIGHT_DATASET_KEYS.filter((key) => selected.has(key));
   const dailyEndpointsToWrite = endpointsToWrite.filter((endpoint) => endpoint.market && endpoint.cadence !== 'monthly');
   const monthlyEndpointsToWrite = endpointsToWrite.filter((endpoint) => endpoint.cadence === 'monthly');
   const tdccEndpoint = endpointsToWrite.find((endpoint) => endpoint.key === 'tdcc') ?? null;
@@ -542,6 +566,39 @@ export async function runSnapshot({
     console.log(`[${writeResult.status}] ${endpoint.key}: ${dates.at(-1)}`);
   }
 
+  const exRightToday = taipeiIsoDate(now());
+  for (const key of exRightKeysToWrite) {
+    const fetched = await fetchExRightDataset(rootDir, key, exRightToday, {
+      fetcher,
+      delayMs: exRightDelayMs,
+      ...(exRightSleep ? { sleepImpl: exRightSleep } : {}),
+    });
+    if (!fetched.ok) {
+      manifest.datasets[key] = {
+        ...manifest.datasets[key],
+        ok: false,
+        lastError: fetched.error,
+      };
+      results.push({ key, ok: false, error: fetched.error, rawWritten: fetched.rawWritten });
+      console.log(`[fail] ${key}: ${fetched.error}`);
+      continue;
+    }
+    manifest.datasets[key] = {
+      first: fetched.first,
+      latest: fetched.latest,
+      years: fetched.years,
+      ok: true,
+    };
+    results.push({
+      key,
+      ok: true,
+      status: fetched.status,
+      date: fetched.date,
+      rawWritten: fetched.rawWritten,
+    });
+    console.log(`[${fetched.status}] ${key}: ${fetched.first}..${fetched.latest}`);
+  }
+
   const changedDailyDatesForDerived = new Set(
     results
       .filter((result) => result.market && result.cadence !== 'monthly' && ['write', 'revise', 'forced'].includes(result.status))
@@ -600,6 +657,14 @@ export async function runSnapshot({
       console.log(`[derived] capital events: rows=${derived.capitalEvents} file=${derived.written ? 'write' : 'same'}`);
     } catch (error) {
       console.error(`[error] derived capital events: ${error?.stack ?? error}`);
+    }
+  }
+  if (results.some((result) => EX_RIGHT_DATASET_KEYS.includes(result.key) && result.rawWritten > 0)) {
+    try {
+      const derived = await applyCorporateActions(rootDir);
+      console.log(`[derived] corporate actions: files=${derived.corporateActions} changed=${derived.written}`);
+    } catch (error) {
+      console.error(`[error] derived corporate actions: ${error?.stack ?? error}`);
     }
   }
   for (const date of changedTdccWeeksForDerived.sort()) {

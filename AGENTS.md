@@ -10,6 +10,7 @@ Rules for agents:
 - Do not add other URLs, undocumented data sources, or FRED series beyond those declared in `SERIES_ENDPOINTS`.
 - Keep zero npm dependencies. Use Node 22 built-ins only.
 - Raw snapshots under `data/raw/` are authoritative bytes from official responses. Do not reformat, filter, sort, or prettify them.
+- TWSE/TPEX ex-right annual snapshots use `data/raw/{twse,tpex}/ex_right/{yyyy}/{yyyy}.json`; historical years are checkpoints, while the current Taipei year is refreshed on every snapshot run and remains write-on-change.
 - Legacy backfill raw snapshots use `data/raw/twse/{mi_index_hist,t86_hist,mi_margn_hist,bwibbu_hist}/{yyyy}/{date}.json` and `data/raw/tpex/{daily_quotes_hist,insti_hist,margin_hist,pe_hist}/{yyyy}/{date}.json`, and preserve official response bytes unchanged.
 - Daily gap coverage is market-local: TWSE unions its four daily legacy namespaces with `twse/stock_day_all`, while TPEX unions `daily_quotes_hist`, `insti_hist`, `margin_hist`, and `pe_hist` with `tpex/mainboard_close`. Do not merge the markets or infer gaps from dataset differences.
 - `scripts/detect-gaps.mjs` must not run concurrently with `scripts/backfill.mjs`. Its `.gap-scan-cache.json` may contain only dates for which TWSE `MI_INDEX` returned the explicit official non-trading shape, including the original `stat`; request failures and non-200 responses must never be cached.
