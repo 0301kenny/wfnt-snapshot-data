@@ -47,7 +47,7 @@ data/raw/twse/ex_right/{yyyy}/{yyyy}.json
 data/raw/tpex/ex_right/{yyyy}/{yyyy}.json
 ```
 
-歷史年度檔存在即略過,台北時間當年度則每次執行重抓 1 月 1 日至今天,內容相同時不改寫。只有無效 JSON 或 TPEX `data.length < totalCount` 的截斷回應會重試；HTTP 與 fetch 錯誤立即失敗。同一市場失敗後不再抓後續年度,另一市場仍獨立執行。兩次同市場請求之間預設間隔 3000 ms。
+歷史年度 raw 只有記錄的查詢迄日等於該年 12 月 31 日才視為 checkpoint 並略過；否則重抓至 12 月 31 日。台北時間當年度則每次執行重抓 1 月 1 日至今天,內容相同時不改寫。只有無效 JSON 或 TPEX `data.length < totalCount` 的截斷回應會重試；HTTP 與 fetch 錯誤立即失敗。同一市場失敗後不再抓後續年度,另一市場仍獨立執行。兩次同市場請求之間預設間隔 3000 ms。
 
 通過驗證的兩市場年度 raw 會全量整理為每檔一份序列:
 

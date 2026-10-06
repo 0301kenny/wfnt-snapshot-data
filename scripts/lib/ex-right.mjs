@@ -1,4 +1,4 @@
-import { access, readdir } from 'node:fs/promises';
+import { access, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as defaultSleep } from 'node:timers/promises';
 import { writeRawBytesOnChange } from './taifex-monthly-backfill.mjs';
@@ -54,6 +54,18 @@ function compactDate(date) {
 
 function slashDate(date) {
   return date.replaceAll('-', '/');
+}
+
+async function isCompleteHistoricalRaw(path, market, year) {
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8'));
+    const recordedEndDate = market === 'twse'
+      ? parsed?.endDate
+      : parsed?.date?.split('~').at(-1);
+    return recordedEndDate === `${year}1231`;
+  } catch {
+    return false;
+  }
 }
 
 function requestForYear(endpoint, year, today) {
@@ -179,14 +191,7 @@ export async function fetchExRightDataset(rootDir, key, today, {
   let rawWritten = 0;
   for (let year = EX_RIGHT_START_YEAR; year <= currentYear; year += 1) {
     const path = exRightRawPath(rootDir, endpoint.market, year);
-    if (year !== currentYear) {
-      try {
-        await access(path);
-        continue;
-      } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
-      }
-    }
+    if (year !== currentYear && await isCompleteHistoricalRaw(path, endpoint.market, year)) continue;
     const fetched = await fetchYear(endpoint, year, today, {
       fetcher,
       sleepImpl,

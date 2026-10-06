@@ -10,12 +10,12 @@ import { runSnapshot } from '../scripts/run.mjs';
 const TWSE_FIELDS = ['資料日期', '股票代號', '除權息前收盤價', '除權息參考價', '權/息'];
 const TPEX_FIELDS = ['除權息日期', '代號', '除權息前收盤價', '除權息參考價', '權/息'];
 
-function twseBody(data = []) {
-  return JSON.stringify({ stat: 'OK', fields: TWSE_FIELDS, data });
+function twseBody(data = [], endDate = '20211002') {
+  return JSON.stringify({ stat: 'OK', endDate, fields: TWSE_FIELDS, data });
 }
 
-function tpexBody(data = [], totalCount = data.length) {
-  return JSON.stringify({ date: '115/10/02', tables: [{ totalCount, fields: TPEX_FIELDS, data }] });
+function tpexBody(data = [], totalCount = data.length, date = '20210101~20211002') {
+  return JSON.stringify({ date, tables: [{ totalCount, fields: TPEX_FIELDS, data }] });
 }
 
 function response(body, status = 200) {
@@ -65,8 +65,12 @@ test('annual ex_right snapshots checkpoint history, refresh current year, and de
       const info = requestInfo(url, options);
       calls.push(info);
       const body = info.market === 'twse'
-        ? `${twseBody([['110年01月02日', '2330', '1', '2', '息']])}\n`
-        : `${tpexBody([['110/01/02', '6488 ', '3', '4', '除權']])}\n`;
+        ? `${twseBody([['110年01月02日', '2330', '1', '2', '息']], info.end)}\n`
+        : `${tpexBody(
+          [['110/01/02', '6488 ', '3', '4', '除權']],
+          1,
+          `${info.year}0101~${info.end.replaceAll('/', '')}`,
+        )}\n`;
       bodies.set(`${info.market}-${info.year}`, body);
       return response(body);
     };
@@ -110,10 +114,90 @@ test('annual ex_right snapshots checkpoint history, refresh current year, and de
   });
 });
 
+test('an incomplete prior year is retried after New Year and replaced only after a complete response', async () => {
+  await withTempDir(async (root) => {
+    const path = join(root, 'data/raw/twse/ex_right/2021/2021.json');
+    const calls = [];
+    const run = (instant, fetcher) => runSnapshot({
+      rootDir: root,
+      datasets: ['twse_ex_right'],
+      now: () => new Date(instant),
+      exRightDelayMs: 0,
+      exRightSleep: async () => {},
+      fetcher,
+    });
+
+    const december30 = `${twseBody([['110年12月30日', '2330', '600', '590', '息']], '20211230')}\n`;
+    const first = await run('2021-12-30T04:00:00Z', async (url, options) => {
+      const info = requestInfo(url, options);
+      calls.push(info);
+      return response(december30);
+    });
+    assert.equal(first.exitCode, 0);
+    assert.deepEqual(calls, [{ market: 'twse', year: 2021, end: '20211230' }]);
+    assert.equal(await readFile(path, 'utf8'), december30);
+
+    calls.length = 0;
+    const failed = await run('2021-12-31T04:00:00Z', async (url, options) => {
+      calls.push(requestInfo(url, options));
+      return response('', 503);
+    });
+    assert.equal(failed.exitCode, 1);
+    assert.deepEqual(calls, [{ market: 'twse', year: 2021, end: '20211231' }]);
+    assert.equal(await readFile(path, 'utf8'), december30);
+
+    calls.length = 0;
+    const december31 = `${twseBody([['110年12月31日', '2330', '601', '591', '權息']], '20211231')}\n`;
+    const january1 = `${twseBody([], '20220101')}\n`;
+    const recovered = await run('2022-01-01T04:00:00Z', async (url, options) => {
+      const info = requestInfo(url, options);
+      calls.push(info);
+      return response(info.year === 2021 ? december31 : january1);
+    });
+    assert.equal(recovered.exitCode, 0);
+    assert.deepEqual(calls, [
+      { market: 'twse', year: 2021, end: '20211231' },
+      { market: 'twse', year: 2022, end: '20220101' },
+    ]);
+    assert.equal(await readFile(path, 'utf8'), december31);
+  });
+});
+
+test('an invalid prior-year raw file is fetched again', async () => {
+  await withTempDir(async (root) => {
+    await writeRaw(root, 'tpex', 2021, '{"date":');
+    const calls = [];
+    const summary = await runSnapshot({
+      rootDir: root,
+      datasets: ['tpex_ex_right'],
+      now: () => new Date('2022-01-01T04:00:00Z'),
+      exRightDelayMs: 0,
+      exRightSleep: async () => {},
+      fetcher: async (url, options) => {
+        const info = requestInfo(url, options);
+        calls.push(info);
+        return response(tpexBody(
+          [],
+          0,
+          `${info.year}0101~${info.end.replaceAll('/', '')}`,
+        ));
+      },
+    });
+    assert.equal(summary.exitCode, 0);
+    assert.deepEqual(calls, [
+      { market: 'tpex', year: 2021, end: '2021/12/31' },
+      { market: 'tpex', year: 2022, end: '2022/01/01' },
+    ]);
+    assert.equal(
+      JSON.parse(await readFile(join(root, 'data/raw/tpex/ex_right/2021/2021.json'), 'utf8')).date,
+      '20210101~20211231',
+    );
+  });
+});
+
 test('truncated TPEX responses retry three times, fail-stop that market, and preserve a later complete retry byte-for-byte', async () => {
   await withTempDir(async (root) => {
     const calls = [];
-    const short = tpexBody([['110/01/02', '6488', '3', '4', '除息']], 2);
     const summary = await runSnapshot({
       rootDir: root,
       datasets: ['twse_ex_right', 'tpex_ex_right'],
@@ -123,7 +207,13 @@ test('truncated TPEX responses retry three times, fail-stop that market, and pre
       fetcher: async (url, options) => {
         const info = requestInfo(url, options);
         calls.push(info);
-        return response(info.market === 'twse' ? twseBody() : short);
+        return response(info.market === 'twse'
+          ? twseBody([], info.end)
+          : tpexBody(
+            [['110/01/02', '6488', '3', '4', '除息']],
+            2,
+            `${info.year}0101~${info.end.replaceAll('/', '')}`,
+          ));
       },
     });
     assert.equal(summary.exitCode, 0);
