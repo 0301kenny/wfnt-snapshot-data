@@ -161,3 +161,17 @@ test('rebuild CLI is byte-identical on a second run with the same raw weeks', as
     assert.deepEqual(await readFile(path), firstBytes);
   });
 });
+
+test('rebuild CLI preserves existing derived files absent from every raw week', async () => {
+  await withTempDir(async (root) => {
+    await writeWeek(root, '2026-10-02', allGrades());
+    const path = join(root, 'data', 'derived', 'tdcc', '99', '9999.json');
+    const bytes = Buffer.from('{"id":"9999","updated":"2026-09-18","cols":["w"],"rows":[[20260918]]}\n');
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, bytes);
+
+    const result = await runRebuild(root);
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(await readFile(path), bytes);
+  });
+});

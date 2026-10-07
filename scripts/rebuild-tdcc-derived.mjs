@@ -1,4 +1,3 @@
-import { rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { applyTdccWeek } from './lib/derived.mjs';
@@ -22,7 +21,6 @@ function parseArgs(argv) {
 export async function rebuildTdccDerived({ rootDir = process.cwd() } = {}) {
   const tdccRawDir = join(rootDir, 'data', 'raw', 'tdcc');
   const weeks = await listCsvGzDates(tdccRawDir);
-  await rm(join(rootDir, 'data', 'derived', 'tdcc'), { recursive: true, force: true });
 
   let files = 0;
   for (const week of weeks) {
