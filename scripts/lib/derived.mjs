@@ -36,7 +36,7 @@ export const DERIVED_INPUT_DATASETS = new Set([
 ]);
 
 const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd', 'sb', 'ss'];
-const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'];
+const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares', 'holders50'];
 const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
 const TAIFEX_PCR_COLS = ['d', 'vol', 'oi'];
@@ -1195,7 +1195,10 @@ async function upsertTdcc(rootDir, id, row, window) {
     cols: TDCC_COLS,
     rows: [],
   });
-  const rows = upsertRows(current.rows ?? [], row, window);
+  const rows = padRowsToWidth(
+    upsertRows(current.rows ?? [], row, window),
+    TDCC_COLS.length,
+  );
   return writeDerivedJson(path, { id, updated: updatedFromRows(rows), cols: TDCC_COLS, rows });
 }
 
@@ -1984,6 +1987,8 @@ export async function applyTdccWeek(rootDir, isoDate, { tdccWindow = DEFAULT_TDC
     const holders = compactNumber(total['人數']);
     const shares = compactNumber(total['股數']);
     const avgShares = holders && shares !== null ? Math.round(shares / holders) : null;
+    const holders50 = [1, 2, 3, 4, 5, 6, 7, 8]
+      .reduce((sum, grade) => sum + (compactNumber(byGrade.get(grade)?.['人數']) ?? 0), 0);
     const didWrite = await upsertTdcc(rootDir, id, [
       isoToInt(weekDate),
       round2(ratio(15)),
@@ -1991,6 +1996,7 @@ export async function applyTdccWeek(rootDir, isoDate, { tdccWindow = DEFAULT_TDC
       round2(ratio(1) + ratio(2) + ratio(3)),
       holders,
       avgShares,
+      holders50,
     ], tdccWindow);
     if (didWrite) written += 1;
   }
