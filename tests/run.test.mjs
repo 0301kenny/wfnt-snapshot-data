@@ -643,8 +643,8 @@ test('derived tdcc computes indicators, excludes six digit symbols, and skips mi
     assert.deepEqual(tdcc, {
       id: '2330',
       updated: '2026-07-04',
-      cols: ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares'],
-      rows: [[20260704, 15.4, 55, 6.6, 200, 10000]],
+      cols: ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares', 'holders50'],
+      rows: [[20260704, 15.4, 55, 6.6, 200, 10000, 175]],
     });
     await assert.rejects(readFile(join(root, 'data', 'derived', 'tdcc', '12', '123456.json')));
     await assert.rejects(readFile(join(root, 'data', 'derived', 'tdcc', '28', '2881A.json')));

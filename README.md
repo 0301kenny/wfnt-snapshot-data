@@ -305,8 +305,8 @@ data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     月檔，官方 Big5 tab-se
 {
   "id": "2330",
   "updated": "2026-07-03",
-  "cols": ["w", "big1000", "big400", "retail", "holders", "avgShares"],
-  "rows": [[20260703, 47.1, 61.3, 8.2, 512345, 5123]]
+  "cols": ["w", "big1000", "big400", "retail", "holders", "avgShares", "holders50"],
+  "rows": [[20260703, 47.1, 61.3, 8.2, 512345, 5123, 3012345]]
 }
 ```
 
@@ -316,7 +316,10 @@ data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     月檔，官方 Big5 tab-se
 - `retail`:分級 1+2+3 占比,10 張以下。
 - `holders`:分級 17 合計人數。
 - `avgShares`:分級 17 股數除以人數,四捨五入整數;人數為 0 時為 `null`。
+- `holders50`:分級 1～8 的人數合計,即 50 張以下人數;缺少的分級以 0 計。
 - 分級 16 差異數調整不參與加總。缺分級 17 的證券會跳過。
+- 新週寫入既有 6 欄檔案時,舊列的 `holders50` 會補 `null`;若要從全部既有原始週檔補齊真值,執行 `node scripts/rebuild-tdcc-derived.mjs --out <root>`。省略 `--out` 時使用目前目錄。
+- 重建腳本不可與每日排程同時執行。
 - Rows 依 `w` 升冪,rolling window 預設 64 週。
 
 ### Fundamentals series
