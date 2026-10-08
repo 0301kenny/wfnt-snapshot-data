@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -61,6 +63,45 @@ function expectedRow(isoDate) {
 
 async function assertMissing(path) {
   await assert.rejects(readFile(path), { code: 'ENOENT' });
+}
+
+async function startLockOwner(path) {
+  const source = `
+    import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+    const lockPath = process.env.TDCC_TEST_LOCK_PATH;
+    process.on('message', (message) => {
+      if (message === 'acquire') {
+        rmSync(lockPath, { recursive: true, force: true });
+        mkdirSync(lockPath);
+        writeFileSync(lockPath + '/pid', process.pid + '\\n');
+        process.send({ type: 'acquired', pid: process.pid });
+      }
+    });
+    process.send({ type: 'ready' });
+  `;
+  const child = spawn(process.execPath, ['--input-type=module', '-e', source], {
+    env: { ...process.env, TDCC_TEST_LOCK_PATH: path },
+    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+  });
+  const [ready] = await once(child, 'message');
+  assert.deepEqual(ready, { type: 'ready' });
+  return {
+    child,
+    async acquire() {
+      const acquired = once(child, 'message');
+      child.send('acquire');
+      const [message] = await acquired;
+      assert.equal(message.type, 'acquired');
+      assert.equal(message.pid, child.pid);
+    },
+  };
+}
+
+async function stopLockOwner(child) {
+  if (child.exitCode !== null) return;
+  const exited = once(child, 'exit');
+  child.kill();
+  await exited;
 }
 
 test('applyTdccWeek waits for a live owner and then writes the expected series', async () => {
@@ -159,5 +200,53 @@ test('concurrent applyTdccWeek calls preserve both weeks', async () => {
       expectedRow('2026-10-08'),
     ]);
     await assertMissing(lockPath(root));
+  });
+});
+
+test('stale cleanup rechecks under the break lock and preserves a replacement owner', async () => {
+  await withTempRoot(async (root) => {
+    await writeWeek(root, '2026-10-01');
+    const path = await createLock(root, 2_147_483_647);
+    const owner = await startLockOwner(path);
+    let staleDetections = 0;
+    try {
+      await assert.rejects(
+        applyTdccWeek(root, '2026-10-01', {
+          lockPollMs: 10,
+          lockTimeoutMs: 50,
+          _testHooks: {
+            afterStaleDetected: async () => {
+              staleDetections += 1;
+              await owner.acquire();
+            },
+          },
+        }),
+        (error) => error.message.includes('busy') && error.message.includes(path),
+      );
+      assert.equal(staleDetections, 1);
+      assert.equal(await readFile(join(path, 'pid'), 'utf8'), `${owner.child.pid}\n`);
+      await assertMissing(join(root, 'data', 'derived', 'tdcc', '23', '2330.json'));
+    } finally {
+      await stopLockOwner(owner.child);
+    }
+  });
+});
+
+test('release preserves a main lock that another process acquired', async () => {
+  await withTempRoot(async (root) => {
+    await writeWeek(root, '2026-10-01');
+    const path = lockPath(root);
+    const owner = await startLockOwner(path);
+    try {
+      assert.deepEqual(
+        await applyTdccWeek(root, '2026-10-01', {
+          _testHooks: { beforeRelease: () => owner.acquire() },
+        }),
+        { tdcc: 1 },
+      );
+      assert.equal(await readFile(join(path, 'pid'), 'utf8'), `${owner.child.pid}\n`);
+    } finally {
+      await stopLockOwner(owner.child);
+    }
   });
 });

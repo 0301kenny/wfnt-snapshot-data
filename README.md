@@ -319,7 +319,7 @@ data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     月檔，官方 Big5 tab-se
 - `holders50`:分級 1～8 的人數合計,即 50 張以下人數;缺少的分級以 0 計。
 - 分級 16 差異數調整不參與加總。缺分級 17 的證券會跳過。
 - 新週寫入既有 6 欄檔案時,舊列的 `holders50` 會補 `null`;若要從全部既有原始週檔補齊真值,執行 `node scripts/rebuild-tdcc-derived.mjs --out <root>`。省略 `--out` 時使用目前目錄。
-- 寫入期間以 `data/derived/.tdcc.lock` 互斥，可與每日排程並行；鎖內 `pid` 已不存在，或無 `pid` 且目錄超過 60 秒時會自動清除殘留鎖，其餘情況如需手動清除，先確認沒有集保 derived 寫入程序，再刪除該鎖目錄。
+- 寫入期間以 `data/derived/.tdcc.lock` 互斥，可與每日排程並行；鎖內 `pid` 已不存在，或無 `pid` 且目錄超過 60 秒時，會先取得 `.tdcc.lock.break`、重新確認後才清除殘留鎖（拆鎖鎖超過 10 秒可清除），釋放時也只刪除本程序持有的主鎖；其餘情況如需手動清除，先確認沒有集保 derived 寫入程序，再刪除鎖目錄。
 - Rows 依 `w` 升冪,rolling window 預設 64 週。
 
 ### Fundamentals series

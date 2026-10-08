@@ -1964,6 +1964,7 @@ function parseTdccRows(text) {
 }
 
 const TDCC_LOCK_STALE_MS = 60_000;
+const TDCC_BREAK_LOCK_STALE_MS = 10_000;
 
 function isProcessAlive(pid) {
   try {
@@ -1978,6 +1979,17 @@ function isProcessAlive(pid) {
 
 async function removeTdccLock(lockPath) {
   await rm(lockPath, { recursive: true, force: true });
+}
+
+async function releaseTdccLock(lockPath) {
+  try {
+    const ownerPid = (await readFile(join(lockPath, 'pid'), 'utf8')).trim();
+    if (ownerPid !== String(process.pid)) return;
+  } catch (error) {
+    if (error.code === 'ENOENT') return;
+    throw error;
+  }
+  await removeTdccLock(lockPath);
 }
 
 async function tdccLockIsStale(lockPath) {
@@ -1998,7 +2010,31 @@ async function tdccLockIsStale(lockPath) {
   }
 }
 
-async function acquireTdccLock(rootDir, { lockPollMs, lockTimeoutMs }) {
+async function tryAcquireTdccBreakLock(lockPath) {
+  const breakLockPath = `${lockPath}.break`;
+  try {
+    await mkdir(breakLockPath);
+    return breakLockPath;
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+
+  try {
+    const breakLockStat = await stat(breakLockPath);
+    if (Date.now() - breakLockStat.mtimeMs > TDCC_BREAK_LOCK_STALE_MS) {
+      await removeTdccLock(breakLockPath);
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  return null;
+}
+
+async function acquireTdccLock(rootDir, {
+  lockPollMs,
+  lockTimeoutMs,
+  afterStaleDetected,
+}) {
   const lockPath = join(rootDir, 'data', 'derived', '.tdcc.lock');
   await mkdir(join(rootDir, 'data', 'derived'), { recursive: true });
   const startedAt = Date.now();
@@ -2018,8 +2054,16 @@ async function acquireTdccLock(rootDir, { lockPollMs, lockTimeoutMs }) {
     }
 
     if (await tdccLockIsStale(lockPath)) {
-      await removeTdccLock(lockPath);
-      continue;
+      if (afterStaleDetected) await afterStaleDetected();
+      const breakLockPath = await tryAcquireTdccBreakLock(lockPath);
+      if (breakLockPath) {
+        try {
+          if (await tdccLockIsStale(lockPath)) await removeTdccLock(lockPath);
+        } finally {
+          await removeTdccLock(breakLockPath);
+        }
+        continue;
+      }
     }
     if (Date.now() - startedAt >= lockTimeoutMs) {
       throw new Error(`TDCC derived lock busy: ${lockPath}`);
@@ -2032,8 +2076,14 @@ export async function applyTdccWeek(rootDir, isoDate, {
   tdccWindow = DEFAULT_TDCC_WINDOW,
   lockPollMs = 200,
   lockTimeoutMs = 300_000,
+  // Internal hooks exist only to make lock-race tests deterministic.
+  _testHooks = {},
 } = {}) {
-  const lockPath = await acquireTdccLock(rootDir, { lockPollMs, lockTimeoutMs });
+  const lockPath = await acquireTdccLock(rootDir, {
+    lockPollMs,
+    lockTimeoutMs,
+    afterStaleDetected: _testHooks.afterStaleDetected,
+  });
   try {
     const path = join(rootDir, 'data', 'raw', 'tdcc', yyyyOf(isoDate), `${isoDate}.csv.gz`);
     const text = gunzipSync(await readFile(path)).toString('utf8');
@@ -2074,6 +2124,10 @@ export async function applyTdccWeek(rootDir, isoDate, {
     }
     return { tdcc: written };
   } finally {
-    await removeTdccLock(lockPath);
+    try {
+      if (_testHooks.beforeRelease) await _testHooks.beforeRelease();
+    } finally {
+      await releaseTdccLock(lockPath);
+    }
   }
 }
