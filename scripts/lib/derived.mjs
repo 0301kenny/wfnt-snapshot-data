@@ -2022,9 +2022,20 @@ function tdccAppliedWeeksPath(rootDir) {
 }
 
 async function readTdccAppliedWeeks(rootDir) {
-  const weeks = await readJsonIfExists(tdccAppliedWeeksPath(rootDir), []);
-  if (!Array.isArray(weeks) || weeks.some((week) => typeof week !== 'string')) {
-    throw new Error(`invalid TDCC applied weeks record: ${tdccAppliedWeeksPath(rootDir)}`);
+  const path = tdccAppliedWeeksPath(rootDir);
+  let weeks;
+  try {
+    weeks = await readJsonIfExists(path, []);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    console.warn(`[warn] derived: invalid TDCC applied weeks record ${path}; treating as empty`);
+    return [];
+  }
+  if (!Array.isArray(weeks) || weeks.some((week) => (
+    typeof week !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(week)
+  ))) {
+    console.warn(`[warn] derived: invalid TDCC applied weeks record ${path}; treating as empty`);
+    return [];
   }
   return weeks;
 }

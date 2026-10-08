@@ -625,12 +625,16 @@ export async function runSnapshot({
     const latestHoldingMonth = (await storedMonthsForEndpoint(rootDir, holdingEndpoint)).at(-1);
     if (latestHoldingMonth) changedInsiderMonthsForDerived.add(latestHoldingMonth);
   }
-  const changedTdccWeeksForDerived = new Set([
-    ...results
+  const changedTdccWeeksForDerived = new Set(
+    results
       .filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status))
       .map((result) => result.date),
-    ...await pendingTdccWeeks(rootDir),
-  ]);
+  );
+  try {
+    for (const week of await pendingTdccWeeks(rootDir)) changedTdccWeeksForDerived.add(week);
+  } catch (error) {
+    console.error(`[error] derived tdcc pending: ${error?.message ?? error}`);
+  }
   for (const date of [...changedDailyDatesForDerived].sort()) {
     try {
       const derived = await applyDailyDate(rootDir, date);
