@@ -1,5 +1,6 @@
-import { readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { gunzipSync } from 'node:zlib';
 import { SERIES_ENDPOINTS } from '../endpoints.mjs';
 import { parseGregorianDate, parseRocDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
@@ -1962,43 +1963,117 @@ function parseTdccRows(text) {
   });
 }
 
-export async function applyTdccWeek(rootDir, isoDate, { tdccWindow = DEFAULT_TDCC_WINDOW } = {}) {
-  const path = join(rootDir, 'data', 'raw', 'tdcc', yyyyOf(isoDate), `${isoDate}.csv.gz`);
-  const text = gunzipSync(await readFile(path)).toString('utf8');
-  const rows = parseTdccRows(text);
-  const grouped = new Map();
-  for (const row of rows) {
-    const id = String(row['證券代號'] ?? '').trim();
-    if (!isDerivedSymbolId(id)) continue;
-    if (!grouped.has(id)) grouped.set(id, new Map());
-    grouped.get(id).set(Number(row['持股分級']), row);
+const TDCC_LOCK_STALE_MS = 60_000;
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error.code === 'ESRCH') return false;
+    if (error.code === 'EPERM') return true;
+    throw error;
+  }
+}
+
+async function removeTdccLock(lockPath) {
+  await rm(lockPath, { recursive: true, force: true });
+}
+
+async function tdccLockIsStale(lockPath) {
+  try {
+    const value = (await readFile(join(lockPath, 'pid'), 'utf8')).trim();
+    if (!/^\d+$/.test(value)) return false;
+    return !isProcessAlive(Number(value));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
   }
 
-  let written = 0;
-  for (const [id, byGrade] of [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const total = byGrade.get(17);
-    if (!total) {
-      console.warn(`[warn] derived: TDCC ${id} missing grade 17 on ${isoDate}; skip`);
+  try {
+    const lockStat = await stat(lockPath);
+    return Date.now() - lockStat.mtimeMs > TDCC_LOCK_STALE_MS;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+async function acquireTdccLock(rootDir, { lockPollMs, lockTimeoutMs }) {
+  const lockPath = join(rootDir, 'data', 'derived', '.tdcc.lock');
+  await mkdir(join(rootDir, 'data', 'derived'), { recursive: true });
+  const startedAt = Date.now();
+
+  while (true) {
+    try {
+      await mkdir(lockPath);
+      try {
+        await writeFile(join(lockPath, 'pid'), `${process.pid}\n`);
+      } catch (error) {
+        await removeTdccLock(lockPath);
+        throw error;
+      }
+      return lockPath;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+
+    if (await tdccLockIsStale(lockPath)) {
+      await removeTdccLock(lockPath);
       continue;
     }
-    const weekDate = parseGregorianDate(total['資料日期']);
-    if (!weekDate) continue;
-    const ratio = (grade) => compactNumber(byGrade.get(grade)?.['占集保庫存數比例%']) ?? 0;
-    const holders = compactNumber(total['人數']);
-    const shares = compactNumber(total['股數']);
-    const avgShares = holders && shares !== null ? Math.round(shares / holders) : null;
-    const holders50 = [1, 2, 3, 4, 5, 6, 7, 8]
-      .reduce((sum, grade) => sum + (compactNumber(byGrade.get(grade)?.['人數']) ?? 0), 0);
-    const didWrite = await upsertTdcc(rootDir, id, [
-      isoToInt(weekDate),
-      round2(ratio(15)),
-      round2(ratio(12) + ratio(13) + ratio(14) + ratio(15)),
-      round2(ratio(1) + ratio(2) + ratio(3)),
-      holders,
-      avgShares,
-      holders50,
-    ], tdccWindow);
-    if (didWrite) written += 1;
+    if (Date.now() - startedAt >= lockTimeoutMs) {
+      throw new Error(`TDCC derived lock busy: ${lockPath}`);
+    }
+    await delay(lockPollMs);
   }
-  return { tdcc: written };
+}
+
+export async function applyTdccWeek(rootDir, isoDate, {
+  tdccWindow = DEFAULT_TDCC_WINDOW,
+  lockPollMs = 200,
+  lockTimeoutMs = 300_000,
+} = {}) {
+  const lockPath = await acquireTdccLock(rootDir, { lockPollMs, lockTimeoutMs });
+  try {
+    const path = join(rootDir, 'data', 'raw', 'tdcc', yyyyOf(isoDate), `${isoDate}.csv.gz`);
+    const text = gunzipSync(await readFile(path)).toString('utf8');
+    const rows = parseTdccRows(text);
+    const grouped = new Map();
+    for (const row of rows) {
+      const id = String(row['證券代號'] ?? '').trim();
+      if (!isDerivedSymbolId(id)) continue;
+      if (!grouped.has(id)) grouped.set(id, new Map());
+      grouped.get(id).set(Number(row['持股分級']), row);
+    }
+
+    let written = 0;
+    for (const [id, byGrade] of [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+      const total = byGrade.get(17);
+      if (!total) {
+        console.warn(`[warn] derived: TDCC ${id} missing grade 17 on ${isoDate}; skip`);
+        continue;
+      }
+      const weekDate = parseGregorianDate(total['資料日期']);
+      if (!weekDate) continue;
+      const ratio = (grade) => compactNumber(byGrade.get(grade)?.['占集保庫存數比例%']) ?? 0;
+      const holders = compactNumber(total['人數']);
+      const shares = compactNumber(total['股數']);
+      const avgShares = holders && shares !== null ? Math.round(shares / holders) : null;
+      const holders50 = [1, 2, 3, 4, 5, 6, 7, 8]
+        .reduce((sum, grade) => sum + (compactNumber(byGrade.get(grade)?.['人數']) ?? 0), 0);
+      const didWrite = await upsertTdcc(rootDir, id, [
+        isoToInt(weekDate),
+        round2(ratio(15)),
+        round2(ratio(12) + ratio(13) + ratio(14) + ratio(15)),
+        round2(ratio(1) + ratio(2) + ratio(3)),
+        holders,
+        avgShares,
+        holders50,
+      ], tdccWindow);
+      if (didWrite) written += 1;
+    }
+    return { tdcc: written };
+  } finally {
+    await removeTdccLock(lockPath);
+  }
 }

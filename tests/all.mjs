@@ -15,6 +15,7 @@ import './taifex-vix.test.mjs';
 import './taifex-current-month.test.mjs';
 import './ex-right.test.mjs';
 import './tdcc-holders50.test.mjs';
+import './tdcc-lock.test.mjs';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
