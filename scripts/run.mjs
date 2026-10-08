@@ -20,6 +20,7 @@ import {
   applyMonthlyRevenue,
   applyTdccWeek,
   parseFredCsv,
+  pendingTdccWeeks,
 } from './lib/derived.mjs';
 import { EX_RIGHT_DATASET_KEYS, fetchExRightDataset } from './lib/ex-right.mjs';
 import { sha256Hex } from './lib/hash.mjs';
@@ -624,9 +625,12 @@ export async function runSnapshot({
     const latestHoldingMonth = (await storedMonthsForEndpoint(rootDir, holdingEndpoint)).at(-1);
     if (latestHoldingMonth) changedInsiderMonthsForDerived.add(latestHoldingMonth);
   }
-  const changedTdccWeeksForDerived = results
-    .filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status))
-    .map((result) => result.date);
+  const changedTdccWeeksForDerived = new Set([
+    ...results
+      .filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status))
+      .map((result) => result.date),
+    ...await pendingTdccWeeks(rootDir),
+  ]);
   for (const date of [...changedDailyDatesForDerived].sort()) {
     try {
       const derived = await applyDailyDate(rootDir, date);
@@ -667,7 +671,7 @@ export async function runSnapshot({
       console.error(`[error] derived corporate actions: ${error?.stack ?? error}`);
     }
   }
-  for (const date of changedTdccWeeksForDerived.sort()) {
+  for (const date of [...changedTdccWeeksForDerived].sort()) {
     try {
       const derived = await applyTdccWeek(rootDir, date);
       console.log(`[derived] tdcc ${date}: files=${derived.tdcc}`);
