@@ -5,7 +5,7 @@ import { gunzipSync } from 'node:zlib';
 import { SERIES_ENDPOINTS } from '../endpoints.mjs';
 import { parseGregorianDate, parseRocDate, parseRocMonth, parseTradingDate, yyyyOf } from './date.mjs';
 import { exRightRawPath, listExRightYears } from './ex-right.mjs';
-import { listJsonDates, readJsonIfExists, writeFileEnsured } from './io.mjs';
+import { listCsvGzDates, listJsonDates, readJsonIfExists, writeFileEnsured } from './io.mjs';
 import { decodeTaifexBig5Csv } from './taifex-monthly-backfill.mjs';
 
 export const DEFAULT_SYMBOL_WINDOW = 1300;
@@ -38,6 +38,7 @@ export const DERIVED_INPUT_DATASETS = new Set([
 
 const SYMBOL_COLS = ['d', 'o', 'h', 'l', 'c', 'v', 't', 'mb', 'ms', 'fi', 'ff', 'ft', 'fd', 'sb', 'ss'];
 const TDCC_COLS = ['w', 'big1000', 'big400', 'retail', 'holders', 'avgShares', 'holders50'];
+const TDCC_APPLIED_WEEKS_FILE = '.tdcc-applied-weeks.json';
 const VALUATION_COLS = ['d', 'per', 'pbr', 'dy'];
 const REVENUE_COLS = ['m', 'rev', 'yoy', 'mom'];
 const TAIFEX_PCR_COLS = ['d', 'vol', 'oi'];
@@ -2016,6 +2017,45 @@ async function acquireTdccLock(rootDir, { lockPollMs, lockTimeoutMs }) {
   }
 }
 
+function tdccAppliedWeeksPath(rootDir) {
+  return join(rootDir, 'data', 'derived', TDCC_APPLIED_WEEKS_FILE);
+}
+
+async function readTdccAppliedWeeks(rootDir) {
+  const path = tdccAppliedWeeksPath(rootDir);
+  let weeks;
+  try {
+    weeks = await readJsonIfExists(path, []);
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) throw error;
+    console.warn(`[warn] derived: invalid TDCC applied weeks record ${path}; treating as empty`);
+    return [];
+  }
+  if (!Array.isArray(weeks) || weeks.some((week) => (
+    typeof week !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(week)
+  ))) {
+    console.warn(`[warn] derived: invalid TDCC applied weeks record ${path}; treating as empty`);
+    return [];
+  }
+  return weeks;
+}
+
+async function recordTdccAppliedWeek(rootDir, isoDate) {
+  const weeks = new Set(await readTdccAppliedWeeks(rootDir));
+  if (weeks.has(isoDate)) return;
+  weeks.add(isoDate);
+  await writeFileEnsured(
+    tdccAppliedWeeksPath(rootDir),
+    `${JSON.stringify([...weeks].sort(), null, 2)}\n`,
+  );
+}
+
+export async function pendingTdccWeeks(rootDir) {
+  const rawWeeks = await listCsvGzDates(join(rootDir, 'data', 'raw', 'tdcc'));
+  const appliedWeeks = new Set(await readTdccAppliedWeeks(rootDir));
+  return rawWeeks.filter((week) => !appliedWeeks.has(week));
+}
+
 export async function applyTdccWeek(rootDir, isoDate, {
   tdccWindow = DEFAULT_TDCC_WINDOW,
   lockPollMs = 200,
@@ -2060,6 +2100,7 @@ export async function applyTdccWeek(rootDir, isoDate, {
       ], tdccWindow);
       if (didWrite) written += 1;
     }
+    await recordTdccAppliedWeek(rootDir, isoDate);
     return { tdcc: written };
   } finally {
     await releaseTdccLock(lockPath);
