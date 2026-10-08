@@ -6,9 +6,8 @@ READY_FOR_REVIEW
 
 - 鎖路徑固定為 `<root>/data/derived/.tdcc.lock`，以不帶 `recursive` 的 `mkdir` 原子取得，成功後在鎖目錄內寫入目前程序的 `pid`。
 - `applyTdccWeek` 在讀取週 raw、解析、逐檔 read-modify-write 的整個期間持鎖；三個既有呼叫端未修改。
-- 鎖被仍存活的 PID 持有時，每 `lockPollMs` 輪詢一次，預設 200 ms。
-- PID 檔指向不存在的程序，或沒有 PID 且鎖目錄 mtime 超過 60 秒時，會先取得 `.tdcc.lock.break`，在拆鎖鎖內重新判定主鎖仍為殘留後才清除；拆鎖鎖 mtime 超過 10 秒時可直接清除。較新的無 PID 主鎖視為 busy。
-- 等待超過 `lockTimeoutMs`（預設 300000 ms）會拋錯；錯誤訊息同時包含 `busy` 與鎖路徑，且不刪除仍存活程序持有的鎖。
+- 鎖已存在時，每 `lockPollMs` 輪詢一次，預設 200 ms；不論 PID 死活、有無 PID 檔或 mtime 多舊，都不自動清除，也沒有拆鎖鎖。
+- 等待超過 `lockTimeoutMs`（預設 300000 ms）會拋錯；錯誤訊息包含 `busy`、鎖路徑、可讀時的鎖內 PID，以及確認沒有寫入程序後手動刪除鎖目錄的指引。
 - 取得鎖後由 `finally` 釋放；釋放前讀取 PID，只有 PID 等於本程序才刪除，因此 raw 缺失或處理過程拋錯會釋放自己的鎖，但不會刪除已由其他程序接管的鎖。
 
 ## 測試證據
@@ -71,9 +70,41 @@ READY_FOR_REVIEW
 
 七組消融後已完整還原正式實作；還原後專項與全套結果如上。
 
+## 第三輪（r2）
+
+### 變更
+
+- 依人類裁決移除所有殘留鎖自動判定與清除、`.tdcc.lock.break`、相關 stale 常數與函式，以及 `_testHooks` 等測試專用 hook。
+- 保留主鎖的原子 `mkdir`、PID 檔、輪詢與逾時；任何既存鎖都只等待至逾時，不依 PID、mtime 或 PID 檔存在與否自動刪除。
+- 逾時錯誤現在包含 `busy`、完整鎖路徑、可讀時的鎖內 PID，以及確認無 TDCC derived writer 後手動刪除鎖目錄的指引。
+- `finally` 仍只在鎖內 PID 等於本程序 PID 時刪除主鎖；持鎖期間 PID 被改寫成他人 PID 時保留該鎖。
+- `tests/tdcc-lock.test.mjs` 依 r2 Acceptance 2 重寫為 7 條，刪除所有殘留自動清除與拆鎖 hook 測試；測試均使用暫存 root 與手寫小型 CSV 後 gzip，固定期望列維持手算值。
+
+### 測試結果
+
+| 階段 | 指令 | 結果 |
+| --- | --- | --- |
+| r2 專項基準綠 | `node --test tests/tdcc-lock.test.mjs` | 7 tests / 7 pass / 0 fail |
+| r2 五組消融還原後綠 | `node --test tests/tdcc-lock.test.mjs` | 7 tests / 7 pass / 0 fail |
+| r2 最終完整測試 | `node --test tests/` | 192 tests / 192 pass / 0 fail |
+
+### r2 消融
+
+每組均單獨改動正式 r2 實作、執行 `node --test tests/tdcc-lock.test.mjs`，記錄後立即還原；五組全部為紅。
+
+| 消融組 | 專項結果 | 失敗條數 |
+| --- | --- | ---: |
+| 1. 拿掉取鎖，直接執行 | 1 pass / 6 fail | 6 |
+| 2. 拿掉 `finally` 釋放 | 5 pass / 2 fail | 2 |
+| 3. 釋放時不檢查 PID | 6 pass / 1 fail | 1 |
+| 4. 加回「PID 已死即清除」 | 6 pass / 1 fail | 1 |
+| 5. 逾時改為不拋錯、直接執行 | 4 pass / 3 fail | 3 |
+
+五組消融後已完整還原正式 r2 實作。
+
 ## 範圍聲明
 
 - 未碰觸真實 `data/`，未在 repo root 執行 `run.mjs`、`build-derived` 或重建腳本。
 - 未打網路。
 - 未修改三個呼叫端、其他 derived、manifest、endpoints、既有測試斷言或歷史 `REPORT-*.md`；`tests/all.mjs` 僅新增 Contract 指定的一行 import。
-- `applyTdccWeek` 的 derived 輸出不變（相同 raw 仍產生相同 schema、列與 bytes）；新增內容僅為跨程序互斥、鎖等待／殘留／逾時處理、兩個逾時選項，以及僅供競態測試的內部 hooks。
+- `applyTdccWeek` 的 derived 輸出不變（相同 raw 仍產生相同 schema、列與 bytes）；現行新增行為僅為跨程序互斥、輪詢／逾時、手動清鎖指引、PID 所有權釋放，以及兩個逾時選項。

@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { gunzipSync } from 'node:zlib';
@@ -1963,20 +1963,6 @@ function parseTdccRows(text) {
   });
 }
 
-const TDCC_LOCK_STALE_MS = 60_000;
-const TDCC_BREAK_LOCK_STALE_MS = 10_000;
-
-function isProcessAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error.code === 'ESRCH') return false;
-    if (error.code === 'EPERM') return true;
-    throw error;
-  }
-}
-
 async function removeTdccLock(lockPath) {
   await rm(lockPath, { recursive: true, force: true });
 }
@@ -1992,49 +1978,15 @@ async function releaseTdccLock(lockPath) {
   await removeTdccLock(lockPath);
 }
 
-async function tdccLockIsStale(lockPath) {
+async function readTdccLockPid(lockPath) {
   try {
-    const value = (await readFile(join(lockPath, 'pid'), 'utf8')).trim();
-    if (!/^\d+$/.test(value)) return false;
-    return !isProcessAlive(Number(value));
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-
-  try {
-    const lockStat = await stat(lockPath);
-    return Date.now() - lockStat.mtimeMs > TDCC_LOCK_STALE_MS;
-  } catch (error) {
-    if (error.code === 'ENOENT') return false;
-    throw error;
+    return (await readFile(join(lockPath, 'pid'), 'utf8')).trim();
+  } catch {
+    return null;
   }
 }
 
-async function tryAcquireTdccBreakLock(lockPath) {
-  const breakLockPath = `${lockPath}.break`;
-  try {
-    await mkdir(breakLockPath);
-    return breakLockPath;
-  } catch (error) {
-    if (error.code !== 'EEXIST') throw error;
-  }
-
-  try {
-    const breakLockStat = await stat(breakLockPath);
-    if (Date.now() - breakLockStat.mtimeMs > TDCC_BREAK_LOCK_STALE_MS) {
-      await removeTdccLock(breakLockPath);
-    }
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
-  }
-  return null;
-}
-
-async function acquireTdccLock(rootDir, {
-  lockPollMs,
-  lockTimeoutMs,
-  afterStaleDetected,
-}) {
+async function acquireTdccLock(rootDir, { lockPollMs, lockTimeoutMs }) {
   const lockPath = join(rootDir, 'data', 'derived', '.tdcc.lock');
   await mkdir(join(rootDir, 'data', 'derived'), { recursive: true });
   const startedAt = Date.now();
@@ -2053,20 +2005,12 @@ async function acquireTdccLock(rootDir, {
       if (error.code !== 'EEXIST') throw error;
     }
 
-    if (await tdccLockIsStale(lockPath)) {
-      if (afterStaleDetected) await afterStaleDetected();
-      const breakLockPath = await tryAcquireTdccBreakLock(lockPath);
-      if (breakLockPath) {
-        try {
-          if (await tdccLockIsStale(lockPath)) await removeTdccLock(lockPath);
-        } finally {
-          await removeTdccLock(breakLockPath);
-        }
-        continue;
-      }
-    }
     if (Date.now() - startedAt >= lockTimeoutMs) {
-      throw new Error(`TDCC derived lock busy: ${lockPath}`);
+      const ownerPid = await readTdccLockPid(lockPath);
+      throw new Error(
+        `TDCC derived lock busy: ${lockPath}; pid=${ownerPid ?? 'unavailable'}; `
+        + 'confirm no TDCC derived writer is running, then remove this lock directory manually',
+      );
     }
     await delay(lockPollMs);
   }
@@ -2076,14 +2020,8 @@ export async function applyTdccWeek(rootDir, isoDate, {
   tdccWindow = DEFAULT_TDCC_WINDOW,
   lockPollMs = 200,
   lockTimeoutMs = 300_000,
-  // Internal hooks exist only to make lock-race tests deterministic.
-  _testHooks = {},
 } = {}) {
-  const lockPath = await acquireTdccLock(rootDir, {
-    lockPollMs,
-    lockTimeoutMs,
-    afterStaleDetected: _testHooks.afterStaleDetected,
-  });
+  const lockPath = await acquireTdccLock(rootDir, { lockPollMs, lockTimeoutMs });
   try {
     const path = join(rootDir, 'data', 'raw', 'tdcc', yyyyOf(isoDate), `${isoDate}.csv.gz`);
     const text = gunzipSync(await readFile(path)).toString('utf8');
@@ -2124,10 +2062,6 @@ export async function applyTdccWeek(rootDir, isoDate, {
     }
     return { tdcc: written };
   } finally {
-    try {
-      if (_testHooks.beforeRelease) await _testHooks.beforeRelease();
-    } finally {
-      await releaseTdccLock(lockPath);
-    }
+    await releaseTdccLock(lockPath);
   }
 }
