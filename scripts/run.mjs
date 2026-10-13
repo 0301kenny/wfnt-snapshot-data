@@ -25,6 +25,7 @@ import {
 import { EX_RIGHT_DATASET_KEYS, fetchExRightDataset } from './lib/ex-right.mjs';
 import { sha256Hex } from './lib/hash.mjs';
 import { listCsvGzDates, listJsonDates, readJsonIfExists, writeFileEnsured } from './lib/io.mjs';
+import { applyScreenerIndex } from './lib/screener-index.mjs';
 import {
   DATASET_KEYS,
   emptySeriesDatasetEntry,
@@ -178,6 +179,7 @@ function normalizeSnapshotManifest(input) {
   manifest.paths.insider = 'data/derived/insider/{p2}/{id}.json';
   manifest.paths.capitalEvents = 'data/derived/capital_events.json';
   manifest.paths.corporateActions = 'data/derived/corporate_actions/{p2}/{id}.json';
+  manifest.paths.screenerIndex = 'data/index/screener.json';
   return manifest;
 }
 
@@ -635,9 +637,11 @@ export async function runSnapshot({
   } catch (error) {
     console.error(`[error] derived tdcc pending: ${error?.message ?? error}`);
   }
+  let screenerInputsApplied = false;
   for (const date of [...changedDailyDatesForDerived].sort()) {
     try {
       const derived = await applyDailyDate(rootDir, date);
+      screenerInputsApplied = true;
       console.log(`[derived] daily ${date}: symbols=${derived.symbols} fundamentals=${derived.fundamentals} market=${derived.market ? 'write' : 'same'}`);
     } catch (error) {
       console.error(`[error] derived daily ${date}: ${error?.stack ?? error}`);
@@ -678,6 +682,7 @@ export async function runSnapshot({
   for (const date of [...changedTdccWeeksForDerived].sort()) {
     try {
       const derived = await applyTdccWeek(rootDir, date);
+      screenerInputsApplied = true;
       console.log(`[derived] tdcc ${date}: files=${derived.tdcc}`);
     } catch (error) {
       console.error(`[error] derived tdcc ${date}: ${error?.stack ?? error}`);
@@ -686,6 +691,14 @@ export async function runSnapshot({
   if (seriesEndpointsToWrite.length > 0 && results.some((result) => result.seriesId && result.ok)) {
     const derived = await applyMacroSeries(rootDir);
     console.log(`[derived] macro: series=${derived.series} macro=${derived.written ? 'write' : 'same'}`);
+  }
+  if (screenerInputsApplied) {
+    try {
+      const index = await applyScreenerIndex(rootDir);
+      console.log(`[derived] screener index: rows=${index.rows} file=${index.written ? 'write' : 'same'}`);
+    } catch (error) {
+      console.error(`[error] derived screener index: ${error?.stack ?? error}`);
+    }
   }
 
   refreshLatestTradingDate(manifest);
