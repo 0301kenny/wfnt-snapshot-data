@@ -17,6 +17,7 @@ import './ex-right.test.mjs';
 import './tdcc-holders50.test.mjs';
 import './tdcc-lock.test.mjs';
 import './tdcc-pending.test.mjs';
+import './screener-index.test.mjs';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

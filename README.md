@@ -323,6 +323,19 @@ data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     月檔，官方 Big5 tab-se
 - 寫入期間以 `data/derived/.tdcc.lock` 互斥，可與每日排程並行；鎖不會自動清除，寫入程序被強制中止留下的鎖會讓之後的寫入逾時拋 `busy`，需確認無寫入程序後手動刪除該目錄。
 - Rows 依 `w` 升冪,rolling window 預設 64 週。
 
+## Screener index
+
+`data/index/screener.json` 是全市場個股與 ETF 的每日摘要索引。格式為
+`{"updated":"yyyy-mm-dd","cols":[...],"rows":[...]}`，每檔一列、依代號升冪，欄位包含價格、
+成交量均值、均線、區間高低、法人買賣超與連續天數、融資融券餘額，以及最新集保分布摘要；索引只存數字摘要，
+不存選股訊號判定。
+
+`cols` 固定為 `id,name,market,kind,date,close,chgPct,volume,volAvg20,ma20,ma60,high60,low60,foreignNet,trustNet,dealerNet,foreignStreak,trustStreak,marginBalance,marginChg5,shortBalance,big1000,retail,big1000Chg4w,retailChg4w,tdccWeek`。
+
+索引由 `run.mjs` 在 daily 或 TDCC derived 成功套用後產生，也可用
+`node scripts/build-screener-index.mjs --out <root>` 單獨建立。它位於 `data/index/`，不屬於
+`build-derived` 可重建的 derived 層；執行 `build-derived` 後，需再執行 `build-screener-index`。
+
 ### Fundamentals series
 
 `data/derived/fundamentals/{p2}/{id}.json`:
