@@ -355,9 +355,10 @@ data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     月檔，官方 Big5 tab-se
 - `name` / `market`:來源列公司名稱與資料集市場。若同代號跨來源碰撞,TWSE metadata 優先;TWSE 與 TPEX 皆有估值來源。
 - `updated`:valuation 最大 `d` 轉 ISO 日期與 revenue 最大 `m` 轉該月 1 日後,取兩者較新值;因此僅有月營收時例如 `202606` 為 `2026-06-01`。Quarterly 不參與 `updated`,避免季度鍵改變既有日期語意。此規則不依執行時間,可確定性重建。
 - `d`:西元 `yyyymmdd` 整數;`per` / `pbr` / `dy` 分別是 `PEratio` / `PBratio` / `DividendYield`。TWSE 估值採 openapi 優先、legacy fallback;TPEX 估值只有 legacy 來源。Rolling window 1300 筆。
+- TWSE OpenAPI 的空字串殖利率代表 `0`，與網站版 `0.00` 一致；本益比空值仍為 `null`，表示虧損。既有 derived 可用 `node scripts/repair-twse-dividend-yield.mjs [--out <root>]` 離線修補；腳本只會修改原始 `twse/bwibbu_all` 明確記錄空殖利率且 derived `dy` 為 `null` 的格子。
 - `m`:西元 `yyyymm` 整數;`rev` 是 `營業收入-當月營收` 的千元原值,不換算;`yoy` / `mom` 分別是去年同月與上月比較增減百分比。月營收採 OpenAPI 優先、MOPS hist fallback。Rolling window 36 筆。
 - `q`:西元年乘 10 加季別,例如 2025Q1 為 `20251`;`gm` / `om` / `nm` 是差分後單季毛利率、營益率、淨利率,百分比四捨五入至小數 2 位。只涵蓋 MOPS 一般業表,rolling window 24 季。
-- 所有數值會移除千分位逗號後轉 Number;空字串、`--`、非有限數或不可解析值為 `null`。Rows 依 `d` / `m` / `q` 升冪並以同鍵 upsert。
+- 除上述 TWSE OpenAPI 空殖利率外，所有數值會移除千分位逗號後轉 Number;空字串、`--`、非有限數或不可解析值為 `null`。Rows 依 `d` / `m` / `q` 升冪並以同鍵 upsert。
 
 ### Market series
 

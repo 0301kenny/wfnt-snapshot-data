@@ -162,6 +162,10 @@ function compactNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+export function compactTwseDividendYield(value) {
+  return typeof value === 'string' && value.trim() === '' ? 0 : compactNumber(value);
+}
+
 function decodeHtmlEntities(value) {
   return value.replace(/&(#\d+|#x[\da-f]+|nbsp|amp|lt|gt|quot|apos);/gi, (entity, token) => {
     const lower = token.toLowerCase();
@@ -777,6 +781,48 @@ async function writeDerivedJson(path, value) {
   }
   await writeFileEnsured(path, next);
   return true;
+}
+
+export async function repairTwseDividendYield(rootDir = process.cwd()) {
+  const rawDir = join(rootDir, 'data', 'raw', 'twse', 'bwibbu_all');
+  const emptyDatesById = new Map();
+  for (const isoDate of await listJsonDates(rawDir)) {
+    const rows = await readJsonIfExists(
+      join(rawDir, isoDate.slice(0, 4), `${isoDate}.json`),
+      [],
+    );
+    for (const row of rows) {
+      if (typeof row?.DividendYield !== 'string' || row.DividendYield.trim() !== '') continue;
+      const id = String(row?.Code ?? '').trim();
+      if (!isDerivedSymbolId(id)) continue;
+      if (!emptyDatesById.has(id)) emptyDatesById.set(id, new Set());
+      emptyDatesById.get(id).add(isoToInt(isoDate));
+    }
+  }
+
+  let files = 0;
+  let cells = 0;
+  for (const [id, dates] of [...emptyDatesById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    const path = join(rootDir, 'data', 'derived', 'fundamentals', p2(id), `${id}.json`);
+    const fundamental = await readJsonIfExists(path, null);
+    if (fundamental?.market !== 'twse') continue;
+    const dateIndex = fundamental.valuation?.cols?.indexOf('d') ?? -1;
+    const dyIndex = fundamental.valuation?.cols?.indexOf('dy') ?? -1;
+    if (dateIndex < 0 || dyIndex < 0 || !Array.isArray(fundamental.valuation?.rows)) continue;
+
+    let fileCells = 0;
+    for (const row of fundamental.valuation.rows) {
+      if (dates.has(row?.[dateIndex]) && row?.[dyIndex] === null) {
+        row[dyIndex] = 0;
+        fileCells += 1;
+      }
+    }
+    if (fileCells > 0 && await writeDerivedJson(path, fundamental)) {
+      files += 1;
+      cells += fileCells;
+    }
+  }
+  return { files, cells };
 }
 
 export function parseFredCsv(bytes, seriesId) {
@@ -1597,7 +1643,9 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
       ymd,
       compactNumber(row.PEratio),
       compactNumber(row.PBratio),
-      compactNumber(row.DividendYield),
+      market === 'twse'
+        ? compactTwseDividendYield(row.DividendYield)
+        : compactNumber(row.DividendYield),
     ], DEFAULT_VALUATION_WINDOW);
     if (didWrite) written.fundamentals += 1;
   }

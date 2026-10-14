@@ -1014,6 +1014,44 @@ test('bwibbu raw produces valuation fundamentals, nulls invalid numbers, and exc
   });
 });
 
+test('TWSE OpenAPI blank dividend yields become zero in incremental and rebuilt fundamentals', async () => {
+  await withTempDir(async (root) => {
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtureBodies({
+        twse_bwibbu_all: jsonBody([
+          { Date: '1150706', Code: '2330', Name: '台積電', PEratio: '', PBratio: '5.2', DividendYield: '' },
+          { Date: '1150706', Code: '2317', Name: '鴻海', PEratio: '12', PBratio: '2', DividendYield: '   ' },
+        ]),
+      })),
+      datasets: ['twse_bwibbu_all'],
+      now: () => new Date('2026-07-06T13:45:00Z'),
+    });
+    assert.equal(summary.exitCode, 0);
+    assert.deepEqual(await readJson(root, 'data/derived/fundamentals/23/2330.json'), {
+      id: '2330',
+      name: '台積電',
+      market: 'twse',
+      updated: '2026-07-06',
+      valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [[20260706, null, 5.2, 0]] },
+      revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] },
+      quarterly: { cols: ['q', 'gm', 'om', 'nm'], rows: [] },
+    });
+    assert.deepEqual(await readJson(root, 'data/derived/fundamentals/23/2317.json'), {
+      id: '2317',
+      name: '鴻海',
+      market: 'twse',
+      updated: '2026-07-06',
+      valuation: { cols: ['d', 'per', 'pbr', 'dy'], rows: [[20260706, 12, 2, 0]] },
+      revenue: { cols: ['m', 'rev', 'yoy', 'mom'], rows: [] },
+      quarterly: { cols: ['q', 'gm', 'om', 'nm'], rows: [] },
+    });
+    const incremental = await fileMap(join(root, 'data', 'derived'));
+    await buildDerived({ rootDir: root });
+    assert.deepEqual(await fileMap(join(root, 'data', 'derived')), incremental);
+  });
+});
+
 test('monthly revenue writes, revises, no-ops, and advances month manifest deterministically', async () => {
   await withTempDir(async (root) => {
     const firstBodies = fixtureBodies({
