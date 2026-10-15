@@ -4,6 +4,7 @@ import './run.test.mjs';
 import './capital-events.test.mjs';
 import './io.test.mjs';
 import './backfill.test.mjs';
+import './history-backfill.test.mjs';
 import './gaps.test.mjs';
 import './monthly-backfill.test.mjs';
 import './quarterly-backfill.test.mjs';

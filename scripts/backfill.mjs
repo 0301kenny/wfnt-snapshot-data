@@ -163,7 +163,7 @@ export function parseTpexSblHist(payload, expectedYmd) {
   });
 }
 
-async function fetchBytesWithRetry(url, {
+export async function fetchBytesWithRetry(url, {
   delayMs,
   maxRetries,
   fetchImpl,
@@ -200,7 +200,7 @@ async function fetchBytesWithRetry(url, {
   }
 }
 
-function rawPath(rootDir, sourceDataset, iso) {
+export function rawPath(rootDir, sourceDataset, iso) {
   return join(rootDir, 'data', 'raw', sourceDataset, yyyyOf(iso), `${iso}.json`);
 }
 
@@ -214,7 +214,7 @@ async function fileExists(path) {
   }
 }
 
-async function writeRawBytesOnChange(path, bytes) {
+export async function writeRawBytesOnChange(path, bytes) {
   try {
     const current = await readFile(path);
     if (current.equals(bytes)) return false;
@@ -250,7 +250,7 @@ async function fetchEndpoint(endpoint, iso, options) {
   return result.bytes;
 }
 
-async function fetchDataEndpointIfMissing(rootDir, endpoint, iso, options, validate) {
+export async function fetchDataEndpointIfMissing(rootDir, endpoint, iso, options, validate) {
   try {
     const bytes = await readFile(rawPath(rootDir, endpoint.sourceDataset, iso));
     try {
