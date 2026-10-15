@@ -110,6 +110,33 @@ node scripts/backfill.mjs --from 2021-07-01 --to 2021-07-31 --out ./.backfill-ou
 dates="$(node scripts/detect-gaps.mjs --dates-only)" && node scripts/backfill.mjs --dates "$dates"
 ```
 
+### Unattended 2006–2021 raw history runner
+
+`scripts/history-backfill.mjs` 是可跨多次 launch 無人看管執行的 raw-only runner。它由 `--to` 向 `--from` 倒序處理，使用獨立的 `data/history-backfill/progress.json` 與跨程序 `.lock`，不讀寫 `.backfill-progress.json`，也不建立 derived 或 manifest。每個市場先以自己的 anchor 判斷交易日；合法但無資料的回應不落檔，帶資料但現行 parser 不接受的回應原樣隔離在 `data/history-backfill/quarantine/`。預設在台北時間 21:00–22:00 暫停，避免和每日快照排程重疊。
+
+手動執行（正式長跑前可先用 `--out` 指向 scratch root）：
+
+```bash
+node scripts/history-backfill.mjs \
+  --from 2006-10-16 \
+  --to 2021-07-18 \
+  --delay-ms 3000 \
+  --max-minutes 28 \
+  --pause-window 21:00-22:00
+```
+
+若連續五個日期的 anchor 異常，進度會進入 `BLOCKED`，後續執行不會發出請求。確認上游版型與 parser 相容後，才以相同範圍加 `--resume-blocked` 恢復。
+
+repo 內的 `ops/launchd/com.wfnt.history-backfill.plist` 是每 30 分鐘喚醒一次、並由 `caffeinate -i` 包住 runner 的範本。安裝與移除方式如下；請先檢查範本中的 repo、Node 與 log 絕對路徑是否符合本機。安裝不是資料 pipeline 的一部分，不應在測試時執行。
+
+```bash
+cp ops/launchd/com.wfnt.history-backfill.plist ~/Library/LaunchAgents/
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.wfnt.history-backfill.plist
+
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.wfnt.history-backfill.plist
+rm ~/Library/LaunchAgents/com.wfnt.history-backfill.plist
+```
+
 隔離 root 的對應用法:
 
 ```bash

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wfnt.history-backfill</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>-i</string>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/zhengweizhu/Projects/wfnt-snapshot-data/scripts/history-backfill.mjs</string>
+    <string>--from</string>
+    <string>2006-10-16</string>
+    <string>--to</string>
+    <string>2021-07-18</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/zhengweizhu/Projects/wfnt-snapshot-data</string>
+  <key>StartInterval</key>
+  <integer>1800</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/zhengweizhu/Library/Logs/wfnt-history-backfill.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/zhengweizhu/Library/Logs/wfnt-history-backfill.log</string>
+</dict>
+</plist>
