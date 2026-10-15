@@ -175,10 +175,26 @@ function newProgress(fromIso, toIso, now) {
     days: { total: inclusiveDays(fromIso, toIso), done: 0, trading: 0, nonTrading: 0 },
     endpoints: emptyEndpointCounts(),
     consecutiveAnchorFailures: 0,
+    pendingDates: [],
     recentDays: [],
     failures: [],
     launches: [],
   };
+}
+
+function normalizePendingDates(values) {
+  return [...new Set(Array.isArray(values)
+    ? values.filter((value) => typeof value === 'string' && ISO_RE.test(value))
+    : [])]
+    .sort((left, right) => right.localeCompare(left));
+}
+
+function addPendingDate(progress, iso) {
+  progress.pendingDates = normalizePendingDates([...progress.pendingDates, iso]);
+}
+
+function removePendingDate(progress, iso) {
+  progress.pendingDates = progress.pendingDates.filter((date) => date !== iso);
 }
 
 function pushLimited(array, value) {
@@ -209,32 +225,30 @@ async function readLockOwner(path) {
   }
 }
 
-async function acquireLock(rootDir, { now, logger, processKill }) {
+function isLockPublishConflict(error) {
+  return error?.code === 'EEXIST' || error?.code === 'ENOTEMPTY';
+}
+
+async function acquireLock(rootDir, { now, logger, processKill, renameImpl }) {
   const path = lockPath(rootDir);
-  await mkdir(join(rootDir, 'data', 'history-backfill'), { recursive: true });
+  const parent = join(rootDir, 'data', 'history-backfill');
+  await mkdir(parent, { recursive: true });
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const token = randomUUID();
+    const temporaryPath = join(parent, `.lock.tmp-${process.pid}-${token}`);
     try {
-      await mkdir(path);
-      try {
-        await writeFile(join(path, 'owner.json'), `${JSON.stringify({
-          pid: process.pid,
-          startedAt: now().toISOString(),
-          token,
-        }, null, 2)}\n`);
-      } catch (error) {
-        await rm(path, { recursive: true, force: true });
-        throw error;
-      }
+      await mkdir(temporaryPath);
+      await writeFile(join(temporaryPath, 'owner.json'), `${JSON.stringify({
+        pid: process.pid,
+        startedAt: now().toISOString(),
+        token,
+      }, null, 2)}\n`);
+      await renameImpl(temporaryPath, path);
       return { acquired: true, path, token };
     } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      let owner = await readLockOwner(path);
-      if (!Number.isInteger(owner.pid) || owner.pid <= 0) {
-        // A winner may still be publishing owner.json immediately after mkdir.
-        await sleep(10);
-        owner = await readLockOwner(path);
-      }
+      await rm(temporaryPath, { recursive: true, force: true });
+      if (!isLockPublishConflict(error)) throw error;
+      const owner = await readLockOwner(path);
       if (pidIsAlive(owner.pid, processKill)) {
         logger.log(`[history-backfill] lock held by live pid ${owner.pid}`);
         return { acquired: false, path };
@@ -242,7 +256,7 @@ async function acquireLock(rootDir, { now, logger, processKill }) {
       logger.log(`[history-backfill] taking over stale lock from pid ${owner.pid ?? 'unknown'}`);
       const stalePath = `${path}.stale-${process.pid}-${token}`;
       try {
-        await rename(path, stalePath);
+        await renameImpl(path, stalePath);
       } catch (renameError) {
         if (renameError.code === 'ENOENT') continue;
         throw renameError;
@@ -405,6 +419,7 @@ export async function runHistoryBackfill({
   logger = console,
   now = () => new Date(),
   processKill = process.kill.bind(process),
+  lockRenameImpl = rename,
 } = {}) {
   rootDir = resolve(rootDir);
   fromIso = assertIso('--from', fromIso);
@@ -424,7 +439,12 @@ export async function runHistoryBackfill({
   if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
   const parsedPauseWindow = parsePauseWindow(pauseWindow);
 
-  const lock = await acquireLock(rootDir, { now, logger, processKill });
+  const lock = await acquireLock(rootDir, {
+    now,
+    logger,
+    processKill,
+    renameImpl: lockRenameImpl,
+  });
   if (!lock.acquired) return { status: 'LOCKED', exitCode: 0 };
   let released = false;
   const release = async () => {
@@ -444,7 +464,10 @@ export async function runHistoryBackfill({
       && saved?.range?.to === toIso
       && saved?.range?.order === 'desc';
     const progress = sameRange ? saved : newProgress(fromIso, toIso, now());
-    if (progress.status === 'DONE') return { status: 'DONE', exitCode: 0, progress };
+    progress.pendingDates = normalizePendingDates(progress.pendingDates);
+    if (progress.status === 'DONE' && progress.pendingDates.length === 0) {
+      return { status: 'DONE', exitCode: 0, progress };
+    }
     if (progress.status === 'BLOCKED' && !resumeBlocked) {
       return { status: 'BLOCKED', exitCode: 1, progress };
     }
@@ -457,12 +480,13 @@ export async function runHistoryBackfill({
     const launch = { startedAt: startedAt.toISOString(), endedAt: '', daysDone: 0, status: '' };
     const daysAtStart = progress.days.done;
     const fetchOptions = { delayMs, maxRetries, fetchImpl, sleepImpl, logger };
-    let iso = progress.nextDate ?? toIso;
-
-    while (iso >= fromIso) {
+    const stopLaunch = async (status, exitCode) => {
+      await finishLaunch(rootDir, progress, launch, status, now, daysAtStart);
+      return { status: progress.status, exitCode, progress };
+    };
+    const attemptDate = async (iso) => {
       if (isInPauseWindow(now(), parsedPauseWindow)) {
-        await finishLaunch(rootDir, progress, launch, 'PAUSED_DAILY_WINDOW', now, daysAtStart);
-        return { status: progress.status, exitCode: 0, progress };
+        return { stopStatus: 'PAUSED_DAILY_WINDOW', exitCode: 0 };
       }
 
       const dayStarted = now();
@@ -474,8 +498,7 @@ export async function runHistoryBackfill({
         if (anchorResult.kind === 'failed') {
           recordEndpoint(progress, anchor, anchorResult);
           addFailure(progress, iso, anchor.sourceDataset, anchorResult.error);
-          await finishLaunch(rootDir, progress, launch, 'PAUSED_NETWORK', now, daysAtStart);
-          return { status: progress.status, exitCode: 0, progress };
+          return { stopStatus: 'PAUSED_NETWORK', exitCode: 0 };
         }
         if (anchorResult.kind === 'anchor-failure') {
           progress.endpoints[anchor.sourceDataset].failed += 1;
@@ -492,42 +515,65 @@ export async function runHistoryBackfill({
           recordEndpoint(progress, endpoint, result);
           if (result.kind === 'failed') {
             addFailure(progress, iso, endpoint.sourceDataset, result.error);
-            await finishLaunch(rootDir, progress, launch, 'PAUSED_NETWORK', now, daysAtStart);
-            return { status: progress.status, exitCode: 0, progress };
+            return { stopStatus: 'PAUSED_NETWORK', exitCode: 0 };
           }
         }
       }
 
-      if (anchorFailure) {
-        progress.consecutiveAnchorFailures += 1;
-      } else {
-        progress.consecutiveAnchorFailures = 0;
-        progress.days.done += 1;
-        if (Object.values(marketStates).includes('trading')) progress.days.trading += 1;
-        else progress.days.nonTrading += 1;
-      }
       pushLimited(progress.recentDays, {
         date: iso,
         durationMs: Math.max(0, now().getTime() - dayStarted.getTime()),
         ...marketStates,
       });
+      return { anchorFailure, marketStates };
+    };
+    const recordCompletedDay = (iso, marketStates) => {
+      removePendingDate(progress, iso);
+      progress.consecutiveAnchorFailures = 0;
+      progress.days.done += 1;
+      if (Object.values(marketStates).includes('trading')) progress.days.trading += 1;
+      else progress.days.nonTrading += 1;
+    };
+    const runtimeLimitReached = () => (
+      now().getTime() - startedAt.getTime() >= maxMinutes * 60_000
+    );
+    let iso = progress.nextDate;
+
+    while (iso && iso >= fromIso) {
+      const result = await attemptDate(iso);
+      if (result.stopStatus) return stopLaunch(result.stopStatus, result.exitCode);
+      if (result.anchorFailure) {
+        addPendingDate(progress, iso);
+        progress.consecutiveAnchorFailures += 1;
+      } else {
+        recordCompletedDay(iso, result.marketStates);
+      }
       const nextDate = previousIsoDate(iso);
       progress.nextDate = nextDate < fromIso ? null : nextDate;
 
       if (progress.consecutiveAnchorFailures >= 5) {
-        await finishLaunch(rootDir, progress, launch, 'BLOCKED', now, daysAtStart);
-        return { status: progress.status, exitCode: 1, progress };
+        return stopLaunch('BLOCKED', 1);
       }
 
       await saveProgress(rootDir, progress, now);
-      if (now().getTime() - startedAt.getTime() >= maxMinutes * 60_000) {
-        await finishLaunch(rootDir, progress, launch, 'IN_PROGRESS', now, daysAtStart);
-        return { status: progress.status, exitCode: 0, progress };
-      }
+      if (runtimeLimitReached()) return stopLaunch('IN_PROGRESS', 0);
       iso = nextDate;
     }
 
     progress.nextDate = null;
+    for (const pendingIso of [...progress.pendingDates]) {
+      const result = await attemptDate(pendingIso);
+      if (result.stopStatus) return stopLaunch(result.stopStatus, result.exitCode);
+      if (result.anchorFailure) {
+        progress.consecutiveAnchorFailures += 1;
+      } else {
+        recordCompletedDay(pendingIso, result.marketStates);
+      }
+      await saveProgress(rootDir, progress, now);
+      if (runtimeLimitReached()) return stopLaunch('IN_PROGRESS', 0);
+    }
+
+    if (progress.pendingDates.length > 0) return stopLaunch('BLOCKED', 1);
     await finishLaunch(rootDir, progress, launch, 'DONE', now, daysAtStart);
     logger.log(`[history-backfill] DONE ${fromIso}..${toIso} days=${progress.days.done}`);
     return { status: progress.status, exitCode: 0, progress };

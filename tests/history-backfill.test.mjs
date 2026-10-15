@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { rawPath } from '../scripts/backfill.mjs';
@@ -242,6 +242,13 @@ test('five consecutive anchor anomalies block, require opt-in resume, and then r
     const first = await run(root, { fromIso: '2021-01-01', toIso: '2021-01-05', fetchImpl });
     assert.equal(first.status, 'BLOCKED');
     assert.equal(first.exitCode, 1);
+    assert.deepEqual(first.progress.pendingDates, [
+      '2021-01-05',
+      '2021-01-04',
+      '2021-01-03',
+      '2021-01-02',
+      '2021-01-01',
+    ]);
     const blockedCalls = calls.length;
     const second = await run(root, { fromIso: '2021-01-01', toIso: '2021-01-05', fetchImpl });
     assert.equal(second.status, 'BLOCKED');
@@ -253,16 +260,65 @@ test('five consecutive anchor anomalies block, require opt-in resume, and then r
   });
 });
 
+test('transient anchor anomalies are retried newest-first and removed from pendingDates', async () => {
+  await withTempDir(async (root) => {
+    const transient = new Set(['2021-01-03', '2021-01-02']);
+    const attempts = new Map();
+    const invalidAnchor = (date) => {
+      const count = (attempts.get(date) ?? 0) + 1;
+      attempts.set(date, count);
+      return transient.has(date) && count === 1;
+    };
+    const result = await run(root, {
+      fromIso: '2021-01-01',
+      toIso: '2021-01-04',
+      fetchImpl: fixtureFetcher({ invalidAnchor }),
+    });
+    assert.equal(result.status, 'DONE');
+    assert.deepEqual(result.progress.pendingDates, []);
+    assert.equal(result.progress.days.done, 4);
+    assert.equal(await exists(rawPath(root, 'twse/mi_index_hist', '2021-01-03')), true);
+    assert.equal(await exists(rawPath(root, 'twse/mi_index_hist', '2021-01-02')), true);
+    assert.deepEqual(
+      result.progress.recentDays.slice(-2).map((day) => day.date),
+      ['2021-01-03', '2021-01-02'],
+    );
+  });
+});
+
+test('a persistent pending anchor anomaly blocks instead of reporting DONE', async () => {
+  await withTempDir(async (root) => {
+    const result = await run(root, {
+      fromIso: '2021-01-01',
+      toIso: '2021-01-03',
+      fetchImpl: fixtureFetcher({ invalidAnchor: (date) => date === '2021-01-02' }),
+    });
+    assert.equal(result.status, 'BLOCKED');
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(result.progress.pendingDates, ['2021-01-02']);
+    assert.equal(result.progress.days.done, 2);
+    assert.equal(await exists(rawPath(root, 'twse/mi_index_hist', '2021-01-02')), false);
+  });
+});
+
 test('a normal fifth date resets four consecutive anchor anomalies', async () => {
   await withTempDir(async (root) => {
     const bad = new Set(['2021-01-05', '2021-01-04', '2021-01-03', '2021-01-02']);
+    const attempts = new Map();
     const result = await run(root, {
       fromIso: '2021-01-01',
       toIso: '2021-01-05',
-      fetchImpl: fixtureFetcher({ invalidAnchor: (date) => bad.has(date) }),
+      fetchImpl: fixtureFetcher({
+        invalidAnchor: (date) => {
+          const count = (attempts.get(date) ?? 0) + 1;
+          attempts.set(date, count);
+          return bad.has(date) && count === 1;
+        },
+      }),
     });
     assert.equal(result.status, 'DONE');
     assert.equal(result.progress.consecutiveAnchorFailures, 0);
+    assert.deepEqual(result.progress.pendingDates, []);
   });
 });
 
@@ -279,6 +335,43 @@ test('a live lock causes no requests and no progress mutation', async () => {
     assert.equal(result.status, 'LOCKED');
     assert.equal(calls.length, 0);
     assert.deepEqual(await readFile(progressPath), sentinel);
+    await rm(lock, { recursive: true, force: true });
+  });
+});
+
+test('a failed atomic lock publication preserves the other owner and cleans only its temp directory', async () => {
+  await withTempDir(async (root) => {
+    const historyDir = join(root, 'data/history-backfill');
+    const lock = join(historyDir, '.lock');
+    const ownerBytes = Buffer.from(JSON.stringify({
+      pid: process.pid,
+      startedAt: '2026-10-16T00:00:00.000Z',
+      token: 'other-owner-token',
+    }));
+    let intercepted = false;
+    const lockRenameImpl = async (from, to) => {
+      if (!intercepted && to === lock) {
+        intercepted = true;
+        await mkdir(lock);
+        await writeFile(join(lock, 'owner.json'), ownerBytes);
+        const error = new Error('simulated publication conflict');
+        error.code = 'ENOTEMPTY';
+        throw error;
+      }
+      return rename(from, to);
+    };
+    const calls = [];
+    const result = await run(root, {
+      fetchImpl: fixtureFetcher({ calls }),
+      lockRenameImpl,
+    });
+    assert.equal(result.status, 'LOCKED');
+    assert.equal(calls.length, 0);
+    assert.deepEqual(await readFile(join(lock, 'owner.json')), ownerBytes);
+    assert.deepEqual(
+      (await readdir(historyDir)).filter((name) => name.startsWith('.lock.tmp-')),
+      [],
+    );
     await rm(lock, { recursive: true, force: true });
   });
 });
@@ -373,6 +466,7 @@ test('progress has required counters and caps recent days, failures, and launche
     assert.equal(result.progress.schemaVersion, 1);
     assert.equal(result.progress.days.total, 51);
     assert.equal(result.progress.days.done, 51);
+    assert.deepEqual(result.progress.pendingDates, []);
     assert.equal(result.progress.recentDays.length, 50);
     assert.deepEqual(Object.keys(result.progress.endpoints['twse/t86_hist']), ['written', 'exists', 'unavailable', 'quarantined', 'failed']);
     assert.equal(result.progress.failures.length, 0);

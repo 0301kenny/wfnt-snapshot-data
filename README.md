@@ -114,6 +114,8 @@ dates="$(node scripts/detect-gaps.mjs --dates-only)" && node scripts/backfill.mj
 
 `scripts/history-backfill.mjs` 是可跨多次 launch 無人看管執行的 raw-only runner。它由 `--to` 向 `--from` 倒序處理，使用獨立的 `data/history-backfill/progress.json` 與跨程序 `.lock`，不讀寫 `.backfill-progress.json`，也不建立 derived 或 manifest。每個市場先以自己的 anchor 判斷交易日；合法但無資料的回應不落檔，帶資料但現行 parser 不接受的回應原樣隔離在 `data/history-backfill/quarantine/`。預設在台北時間 21:00–22:00 暫停，避免和每日快照排程重疊。
 
+進度檔的 `pendingDates` 是不設上限、去重且由新到舊排序的日期陣列。主游標遇到 anchor 異常時會把日期加入此欄並繼續；主範圍結束後逐日重試，成功才移除並計入 `days.done`。只有 `pendingDates` 清空時狀態才會成為 `DONE`，重試一輪仍有異常則進入 `BLOCKED`。
+
 手動執行（正式長跑前可先用 `--out` 指向 scratch root）：
 
 ```bash

@@ -284,3 +284,97 @@ data/history-backfill/progress.json
   ]
 }
 ```
+
+## 修正輪 2
+
+狀態：`READY_FOR_REVIEW`。只修正 Orchestrator 接受的兩筆 finding；未連網、未碰 repo 真實 `data/`、未 commit。
+
+### 修正內容
+
+1. 進度新增無上限、去重、由新到舊排序的 `pendingDates`。主游標遇到任一市場 anchor 異常時將日期加入並繼續；主範圍結束後以同一個每日 attempt 依序重試。成功日期才移除並計入 `days.done`；重試一輪仍有異常則 `BLOCKED`，只有清空後才能 `DONE`。
+2. 鎖改為先建立唯一 `.lock.tmp-<pid>-<token>` 目錄並寫好 `owner.json`，再 rename 成正式 `.lock` 原子發布。發布衝突只移除自己的暫存目錄；正式鎖只有 owner token 等於自己的 token 時才會由 release 移除。舊版缺 owner 的殘留鎖仍可接手，已移除讀不到 owner 後 sleep 10ms 的權宜路徑。
+3. README 已同步說明 `pendingDates` 欄位與 `DONE`／`BLOCKED` 條件。
+
+### 完整測試
+
+命令：
+
+```text
+node --test tests/
+```
+
+完整摘要原文：
+
+```text
+1..236
+# tests 236
+# suites 0
+# pass 236
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 9860.636995
+```
+
+### 消融 1：拿掉 `pendingDates` 重試
+
+消融方式：將主範圍後的 pending 迴圈輸入暫改為空陣列。
+
+紅燈輸出：
+
+```text
+# Subtest: transient anchor anomalies are retried newest-first and removed from pendingDates
+not ok 1 - transient anchor anomalies are retried newest-first and removed from pendingDates
+  error: |-
+    Expected values to be strictly equal:
+
+    'BLOCKED' !== 'DONE'
+  expected: 'DONE'
+  actual: 'BLOCKED'
+1..1
+# tests 1
+# pass 0
+# fail 1
+```
+
+還原後：
+
+```text
+ok 1 - transient anchor anomalies are retried newest-first and removed from pendingDates
+1..1
+# tests 1
+# pass 1
+# fail 0
+```
+
+### 消融 2：恢復舊的正式鎖無條件 `rm`
+
+消融方式：在原子發布衝突後、讀取正式鎖 owner 前，暫時加入 `rm(.lock, { recursive: true, force: true })`。
+
+紅燈輸出：
+
+```text
+# Subtest: a failed atomic lock publication preserves the other owner and cleans only its temp directory
+not ok 1 - a failed atomic lock publication preserves the other owner and cleans only its temp directory
+  error: |-
+    Expected values to be strictly equal:
+
+    'DONE' !== 'LOCKED'
+  expected: 'LOCKED'
+  actual: 'DONE'
+1..1
+# tests 1
+# pass 0
+# fail 1
+```
+
+還原後：
+
+```text
+ok 1 - a failed atomic lock publication preserves the other owner and cleans only its temp directory
+1..1
+# tests 1
+# pass 1
+# fail 0
+```
