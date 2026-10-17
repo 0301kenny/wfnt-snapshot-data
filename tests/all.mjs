@@ -1,6 +1,7 @@
 import './date.test.mjs';
 import './cli-flags.test.mjs';
 import './run.test.mjs';
+import './current-only-snapshots.test.mjs';
 import './capital-events.test.mjs';
 import './io.test.mjs';
 import './backfill.test.mjs';
