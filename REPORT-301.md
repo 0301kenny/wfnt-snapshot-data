@@ -81,3 +81,52 @@ quarterly: seasons=2 fundamentals=3905 eps=3911
 ```
 
 Thus 2330 has 2026-Q2 net margin `55.64` and single-quarter EPS `27.25`. The supplied 2026-Q2 TWSE raw has no 2882 company row (while Q1 does), so the specified previous/current-row rule produces no 2882 Q2 margin or EPS entry; the empty arrays above are the observed output rather than a parser or runner failure.
+
+## 修正輪（accepted findings）
+
+### 修正內容
+
+- Finding 1：全表 parser 的 EPS 欄位依序採用 `基本每股盈餘（元）`、`基本每股盈餘`；兩欄皆不存在時為 `null`。新增保險新格式 Q1 直接值、Q2 累計差分與無 EPS 欄位測試。
+- Finding 2：全表 parser 的所有 kind 恢復與 base 相同的 `/^\d{4}$/` 公司代號限制。新增一般業 `ABCD`、`12345` 均跳過並與 `parseMopsQuarterlyFinHtml` 輸出代號一致的測試。
+
+### 完整測試摘要
+
+```text
+node --test tests/
+1..281
+# tests 281
+# suites 0
+# pass 281
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 13136.843507
+```
+
+### 修正輪消融
+
+1. 暫時改回只認 `基本每股盈餘（元）`。
+   - Red：1 test / 0 pass / 1 fail。
+   - 保險新格式 2851 預期 `[[20251,0.4],[20252,0.5]]`，實際為 `undefined`。
+   - 還原別名 fallback 後：1 test / 1 pass / 0 fail。
+2. 暫時恢復 `/^[A-Za-z0-9]+$/` 英數代號。
+   - Red：1 test / 0 pass / 1 fail。
+   - 預期只有 `2330`，實際額外接受 `ABCD`、`12345`。
+   - 還原 `/^\d{4}$/` 後：1 test / 1 pass / 0 fail。
+
+### 修正輪 Required Evidence 4
+
+只讀真實 Q1/Q2 raw 並複製到 `/tmp/wfnt-t301-fix-evidence.lIkMP7`，所有 derived 寫入均留在該暫存 root。
+
+```text
+node scripts/rebuild-quarterly.mjs --out /tmp/wfnt-t301-fix-evidence.lIkMP7
+quarterly: seasons=2 fundamentals=3905 eps=3922
+```
+
+保險業 2026-Q2 單季 EPS：
+
+```json
+{"id":"2816","eps":[[20262,6.06]]}
+{"id":"2850","eps":[[20262,4.52]]}
+```

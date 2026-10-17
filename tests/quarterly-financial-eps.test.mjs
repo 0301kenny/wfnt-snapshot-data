@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { buildDerived } from '../scripts/build-derived.mjs';
 import {
   applyQuarterlyFinancials,
+  parseMopsQuarterlyFinHtml,
   parseMopsQuarterlyFinTables,
 } from '../scripts/lib/derived.mjs';
 import { rebuildQuarterly } from '../scripts/rebuild-quarterly.mjs';
@@ -19,7 +20,8 @@ const GENERAL = ['公司代號', '公司名稱', '營業收入', '營業毛利�
 const BANK = ['公司代號', '公司名稱', '利息淨收益', '利息以外淨損益', '本期稅後淨利（淨損）', '基本每股盈餘（元）'];
 const HOLDING = ['公司代號', '公司名稱', '淨收益', '本期稅後淨利（淨損）', '基本每股盈餘（元）'];
 const SECURITIES = ['公司代號', '公司名稱', '收益', '支出及費用', '本期淨利（淨損）', '基本每股盈餘（元）'];
-const INSURANCE_NEW = ['公司代號', '公司名稱', '保險服務結果', '本期淨利（淨損）'];
+const INSURANCE_NEW = ['公司代號', '公司名稱', '保險服務結果', '本期淨利（淨損）', '基本每股盈餘'];
+const INSURANCE_NO_EPS = ['公司代號', '公司名稱', '保險服務結果', '本期淨利（淨損）'];
 const INSURANCE_OLD = ['公司代號', '公司名稱', '營業收入', '本期淨利（淨損）', '基本每股盈餘（元）'];
 const OTHER = ['公司代號', '公司名稱', '收入', '支出', '本期淨利（淨損）', '基本每股盈餘（元）'];
 
@@ -49,7 +51,7 @@ function quarterFixture(quarter, additions = []) {
       ['2330', '台積電', q1 ? '100' : '250', q1 ? '40' : '100', q1 ? '30' : '70', q1 ? '20' : '45', q1 ? '2' : '5'],
       ...additions,
     ]],
-    [INSURANCE_NEW, [['2851', '中再保', '7', '2']]],
+    [INSURANCE_NEW, [['2851', '中再保', '7', '2', q1 ? '0.4' : '0.9']]],
   ]);
 }
 
@@ -77,7 +79,7 @@ test('all six quarterly table kinds use their specified revenue columns', () => 
     [BANK, [['1002', '銀行', '80', '20', '10', '1']]],
     [HOLDING, [['1003', '金控', '300', '30', '3']]],
     [SECURITIES, [['1004', '證券', '200', '150', '20', '4']]],
-    [INSURANCE_NEW, [['1005', '保險', '9', '5']]],
+    [INSURANCE_NEW, [['1005', '保險', '9', '5', '0.8']]],
     [OTHER, [['1006', '其他', '60', '40', '6', '1.2']]],
   ]));
   assert.deepEqual(rows.map(({ id, kind, revenue }) => [id, kind, revenue]), [
@@ -102,6 +104,37 @@ test('legacy insurance format uses operating revenue and keeps EPS', () => {
     id: '1005', name: '舊保險', kind: 'insurance', revenue: 90,
     grossProfit: null, operatingIncome: null, netIncome: 12, eps: 1.5,
   });
+});
+
+test('new insurance EPS header supports Q1 direct and Q2 cumulative differences', async () => {
+  await withTempDir(async (root) => {
+    await writeRaw(root, 'twse', '2025-Q1', quarterFixture(1));
+    await writeRaw(root, 'twse', '2025-Q2', quarterFixture(2));
+    await applyQuarterlyFinancials(root, '2025-Q1');
+    await applyQuarterlyFinancials(root, '2025-Q2');
+    assert.deepEqual((await readEps(root)).series['2851'], [[20251, 0.4], [20252, 0.5]]);
+  });
+});
+
+test('insurance rows without either EPS header keep eps null', () => {
+  const [row] = parseMopsQuarterlyFinTables(fixture([
+    [INSURANCE_NO_EPS, [['2851', '中再保', '7', '2']]],
+  ]));
+  assert.equal(row.eps, null);
+});
+
+test('full-table parser keeps the legacy four-digit numeric company-id rule', () => {
+  const bytes = fixture([
+    [GENERAL, [
+      ['2330', '合法', '100', '40', '30', '20', '2'],
+      ['ABCD', '英數', '100', '40', '30', '20', '2'],
+      ['12345', '五碼', '100', '40', '30', '20', '2'],
+    ]],
+  ]);
+  const legacyIds = parseMopsQuarterlyFinHtml(bytes).map((row) => row.id);
+  const allTableIds = parseMopsQuarterlyFinTables(bytes).map((row) => row.id);
+  assert.deepEqual(allTableIds, ['2330']);
+  assert.deepEqual(allTableIds, legacyIds);
 });
 
 test('unrecognized quarterly table warns and is skipped without throwing', () => {
@@ -265,7 +298,7 @@ test('rebuild-quarterly CLI honors --out and reports its summary', async () => {
     const { stdout } = await execFileAsync(process.execPath, ['scripts/rebuild-quarterly.mjs', '--out', root], {
       cwd: repoRoot,
     });
-    assert.match(stdout, /^quarterly: seasons=1 fundamentals=3 eps=4\n$/);
+    assert.match(stdout, /^quarterly: seasons=1 fundamentals=3 eps=5\n$/);
     assert.deepEqual((await readEps(root)).series['2882'], [[20251, 1]]);
   });
 });

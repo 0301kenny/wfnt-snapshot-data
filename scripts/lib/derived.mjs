@@ -269,7 +269,7 @@ export function parseMopsQuarterlyFinTables(bytes) {
       continue;
     }
     if (kind === null || header === null
-      || !/^[A-Za-z0-9]+$/.test(cells[0] ?? '')
+      || !/^\d{4}$/.test(cells[0] ?? '')
       || cells.length !== header.length) continue;
     const cell = (field) => {
       const index = header.indexOf(field);
@@ -292,6 +292,9 @@ export function parseMopsQuarterlyFinTables(bytes) {
     const netIncomeField = header.includes(MOPS_QUARTERLY_FIELDS.netIncome)
       ? MOPS_QUARTERLY_FIELDS.netIncome
       : '本期稅後淨利（淨損）';
+    const epsField = header.includes('基本每股盈餘（元）')
+      ? '基本每股盈餘（元）'
+      : '基本每股盈餘';
     rows.push({
       id: cells[header.indexOf(MOPS_QUARTERLY_FIELDS.id)],
       name: cells[header.indexOf(MOPS_QUARTERLY_FIELDS.name)],
@@ -300,7 +303,7 @@ export function parseMopsQuarterlyFinTables(bytes) {
       grossProfit: kind === 'general' ? cell(MOPS_QUARTERLY_FIELDS.grossProfit) : null,
       operatingIncome: kind === 'general' ? cell(MOPS_QUARTERLY_FIELDS.operatingIncome) : null,
       netIncome: cell(netIncomeField),
-      eps: cell('基本每股盈餘（元）'),
+      eps: cell(epsField),
     });
   }
   return rows;
