@@ -371,28 +371,36 @@ async function writeGithubOutput(rootDir, summary) {
 }
 
 function countByMarket(results, market) {
-  const scoped = results.filter((result) => result.market === market && result.cadence !== 'monthly');
+  const scoped = results.filter((result) => (
+    result.market === market && result.cadence !== 'monthly' && !RAW_ONLY_KEYS.has(result.key)
+  ));
   return `${scoped.filter((result) => result.ok).length}/${scoped.length}`;
 }
 
-function commitMessage(results, changedDates) {
-  const revised = results.filter((result) => result.status === 'revise');
+function commitMessage(results, currentTaipeiDate) {
+  const changedStatuses = ['write', 'revise', 'forced'];
+  const revised = results.filter((result) => result.status === 'revise' && !RAW_ONLY_KEYS.has(result.key));
+  const changedCurrentOnly = results.filter((result) => (
+    RAW_ONLY_KEYS.has(result.key) && changedStatuses.includes(result.status)
+  ));
   const changedTdcc = results.filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status));
   const dailyChangedDates = results
-    .filter((result) => result.market && result.cadence !== 'monthly' && ['write', 'revise', 'forced'].includes(result.status))
+    .filter((result) => result.market && result.cadence !== 'monthly' && !RAW_ONLY_KEYS.has(result.key)
+      && changedStatuses.includes(result.status))
     .map((result) => result.date)
     .sort();
   const tradingDate = dailyChangedDates.at(-1) ?? null;
   const tdccDate = changedTdcc.map((result) => result.date).sort().at(-1) ?? null;
   if (revised.length > 0) {
-    const reviseDate = [...changedDates].filter(Boolean).sort().at(-1) ?? tdccDate;
+    const reviseDate = revised.map((result) => result.date ?? result.month).filter(Boolean).sort().at(-1) ?? tdccDate;
     return `revise: ${reviseDate} [${revised.map((result) => {
       if (result.key === 'tdcc') return 'tdcc';
       if (result.seriesId) return result.key;
       return `${result.market}:${result.key.replace(`${result.market}_`, '')}`;
     }).join(',')}]`;
   }
-  const changedMonthly = results.filter((result) => result.cadence === 'monthly' && ['write', 'forced'].includes(result.status));
+  const changedMonthly = results.filter((result) => result.cadence === 'monthly' && !RAW_ONLY_KEYS.has(result.key)
+    && ['write', 'forced'].includes(result.status));
   if (!tradingDate && changedMonthly.length > 0) {
     return `snapshot(monthly): ${changedMonthly.map((result) => `${result.key}:${result.month}`).join(',')}`;
   }
@@ -401,12 +409,20 @@ function commitMessage(results, changedDates) {
     return `snapshot(macro): ${changedSeries.map((result) => result.key).join(',')}`;
   }
   if (!tradingDate && tdccDate) return `snapshot(tdcc): ${tdccDate}`;
+  if (!tradingDate && changedCurrentOnly.length > 0) {
+    const labels = changedCurrentOnly.map((result) => `${result.market}:${result.key.replace(`${result.market}_`, '')}`);
+    return `snapshot(current-only): ${currentTaipeiDate} [${labels.join(',')}]`;
+  }
   if (!tradingDate) return 'snapshot: no-op';
-  const changed = results.filter((result) => ['write', 'forced'].includes(result.status));
-  const dailyResults = results.filter((result) => result.market && result.cadence !== 'monthly');
+  const changed = results.filter((result) => !RAW_ONLY_KEYS.has(result.key) && ['write', 'forced'].includes(result.status));
+  const dailyResults = results.filter((result) => (
+    result.market && result.cadence !== 'monthly' && !RAW_ONLY_KEYS.has(result.key)
+  ));
   const dailyChanged = changed.filter((result) => result.market && result.cadence !== 'monthly');
   const retry = dailyChanged.length < dailyResults.filter((result) => result.ok).length ? ' retry' : '';
-  const scoped = dailyResults.length === ENDPOINTS.filter((endpoint) => endpoint.market && endpoint.cadence !== 'monthly').length
+  const scoped = dailyResults.length === ENDPOINTS.filter((endpoint) => (
+    endpoint.market && endpoint.cadence !== 'monthly' && !endpoint.rawOnly
+  )).length
     ? `[twse ${countByMarket(results, 'twse')}, tpex ${countByMarket(results, 'tpex')}]`
     : `[${dailyChanged.map((result) => `${result.market}:${result.key.replace(`${result.market}_`, '')}`).join(',')}]`;
   const tdccSuffix = tdccDate ? ` + tdcc:${tdccDate}` : '';
@@ -424,7 +440,8 @@ export async function runSnapshot({
   applyDailyDateImpl = applyDailyDate,
   applyMonthlyRevenueImpl = applyMonthlyRevenue,
 } = {}) {
-  const currentTaipeiMonth = taipeiIsoDate(now()).slice(0, 7);
+  const currentTaipeiDate = taipeiIsoDate(now());
+  const currentTaipeiMonth = currentTaipeiDate.slice(0, 7);
   const selected = selectedEndpointKeys(datasets);
   const explicitTdcc = datasets?.includes('tdcc') ?? false;
   const manifestPath = join(rootDir, 'data', 'manifest.json');
@@ -722,7 +739,7 @@ export async function runSnapshot({
   const exitCode = ((markets.length > 0 && anchorsFailed === markets.length) || successful === 0) ? 1 : 0;
   const summary = {
     changed: newManifestString !== oldManifestString || changedDates.size > 0,
-    commitMessage: commitMessage(results, changedDates),
+    commitMessage: commitMessage(results, currentTaipeiDate),
     tradingDate: manifest.latestTradingDate,
     results,
     exitCode,

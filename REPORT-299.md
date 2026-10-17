@@ -189,3 +189,82 @@ raw/twse/trading_halt/2026/2026-10-30.json
 ```
 
 測試逐一以 `Buffer` 比對 14 份 raw 與假官方回應，皆逐 byte 相等；anchor response 只用於決定日期，不會額外落地。
+
+## 修正輪（Accepted Findings）
+
+### 修正內容
+
+- Finding 1：`scripts/run.mjs:373-428` 的 `countByMarket`、交易日候選、月更與 revise 分支都排除 `RAW_ONLY_KEYS`。只有 raw-only 變更時使用穩定格式 `snapshot(current-only): <台北日期> [...]`；`changed` 仍為 `true`。執行日期在 `scripts/run.mjs:443-444` 固定一次，並於 `:742` 傳入 commit message formatter。
+- Finding 1 測試：`tests/current-only-snapshots.test.mjs:238-269` 手寫驗證只有 `twse_material_info` 時的 current-only 訊息、`changed=true`、`tradingDate=null`，以及 core 與 raw-only 同時變更時只由 core 決定交易日與訊息 scope。`:313-314` 另驗證 raw-only `revise` 不產生交易日。
+- Finding 2：`tests/current-only-snapshots.test.mjs:167-168` 對八個合法空陣列端點逐一讀回各自的 anchor-date raw，並以 Buffer 斷言 bytes 恰為 `[]`。
+
+### 完整測試
+
+在 worktree 根目錄執行 `node --test tests/`：
+
+```text
+1..249
+# tests 249
+# suites 0
+# pass 249
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10215.065907
+```
+
+### 修正輪消融 1：拿掉 Finding 1 的 raw-only 交易日排除
+
+暫時移除 `dailyChangedDates` 的 `!RAW_ONLY_KEYS.has(result.key)`，執行：
+
+```text
+$ node --test --test-name-pattern='raw-only daily write uses' tests/current-only-snapshots.test.mjs
+# Subtest: a raw-only daily write uses a current-only commit message and has no trading date
+not ok 1 - a raw-only daily write uses a current-only commit message and has no trading date
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + 'snapshot: 2026-10-30 []'
+    - 'snapshot(current-only): 2026-10-30 [twse:material_info]'
+1..1
+# tests 1
+# pass 0
+# fail 1
+```
+
+還原排除後，同時執行 only-raw 與 core-plus-raw 兩項測試：
+
+```text
+1..2
+# tests 2
+# pass 2
+# fail 0
+```
+
+### 修正輪消融 2：合法空陣列成功但略過 raw 寫檔
+
+暫時在 daily loop 對 `loaded.rows.length === 0` 記成功後直接略過寫檔，執行：
+
+```text
+$ node --test --test-name-pattern='eight approved daily endpoints accept' tests/current-only-snapshots.test.mjs
+# Subtest: only the eight approved daily endpoints accept an empty JSON array
+not ok 1 - only the eight approved daily endpoints accept an empty JSON array
+  error: "ENOENT: no such file or directory, open '.../data/raw/twse/material_info/2026/2026-10-30.json'"
+1..1
+# tests 1
+# pass 0
+# fail 1
+```
+
+還原 raw 寫檔後：
+
+```text
+1..1
+# tests 1
+# pass 1
+# fail 0
+```
+
+兩組消融皆已還原；其後完整測試為 249／249 綠燈。本修正輪未連網、未寫入真實 `data/`、未操作主目錄，且依指示未 commit。

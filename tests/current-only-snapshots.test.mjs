@@ -164,6 +164,8 @@ test('only the eight approved daily endpoints accept an empty JSON array', async
         now: () => new Date('2026-10-30T12:00:00Z'),
       });
       assert.equal(summary.results.find((result) => result.key === key)?.ok, true, key);
+      const sourceDataset = DAILY.find(([dailyKey]) => dailyKey === key)[1];
+      assert.deepEqual(await readFile(dailyPath(root, sourceDataset)), Buffer.from('[]'), key);
     }
     const manifestAfterAllowed = await readManifest(root);
     for (const key of EMPTY_OK_KEYS) assert.equal(manifestAfterAllowed.datasets[key].ok, true, key);
@@ -233,6 +235,36 @@ test('current-only daily writes do not advance manifest latestTradingDate', asyn
   });
 });
 
+test('a raw-only daily write uses a current-only commit message and has no trading date', async () => {
+  await withTempDir(async (root) => {
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtures()),
+      datasets: ['twse_material_info'],
+      now: () => new Date('2026-10-30T12:00:00Z'),
+    });
+    assert.equal(summary.changed, true);
+    assert.equal(summary.commitMessage, 'snapshot(current-only): 2026-10-30 [twse:material_info]');
+    assert.equal(summary.tradingDate, null);
+    assert.equal(summary.commitMessage.startsWith('snapshot: 2026-10-30'), false);
+  });
+});
+
+test('a core and raw-only daily write derives trading date and commit scope from the core dataset only', async () => {
+  await withTempDir(async (root) => {
+    const summary = await runSnapshot({
+      rootDir: root,
+      fetcher: fetcherFor(fixtures()),
+      datasets: ['twse_stock_day_all', 'twse_material_info'],
+      now: () => new Date('2026-10-30T12:00:00Z'),
+      applyDailyDateImpl: async () => ({ symbols: 0, fundamentals: 0, market: false }),
+    });
+    assert.equal(summary.changed, true);
+    assert.equal(summary.commitMessage, 'snapshot: 2026-10-30 [twse:stock_day_all]');
+    assert.equal(summary.tradingDate, '2026-10-30');
+  });
+});
+
 test("tpex dividend ignores old 出表日期 and uses the injected clock's Taipei month", async () => {
   await withTempDir(async (root) => {
     const bodies = fixtures();
@@ -278,6 +310,8 @@ test('same-month rerun is same without rewriting and changed content is revise',
       now: () => new Date('2026-11-01T02:00:00Z'),
     });
     assert.equal(revised.results.find((result) => result.key === 'twse_agm_notice')?.status, 'revise');
+    assert.equal(revised.commitMessage, 'snapshot(current-only): 2026-11-01 [twse:agm_notice]');
+    assert.equal(revised.tradingDate, null);
     assert.deepEqual(await readFile(path), Buffer.from(revisedBody));
     assert.notEqual((await stat(path)).mtimeMs, oldTime.getTime());
   });
