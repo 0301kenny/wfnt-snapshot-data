@@ -4,7 +4,8 @@ This repo stores official public after-market snapshots for TW Stock Radar. It i
 
 Rules for agents:
 
-- Endpoint allowlist is only the 8 daily endpoints, 2 current monthly revenue endpoints, the TDCC weekly endpoint, the 2 MOPS monthly and 2 MOPS quarterly backfill endpoints, the TAIFEX monthly Put/Call Ratio, foreign-futures, and VIXTWN backfill endpoints, the 4 TWSE plus 4 TPEX daily backfill-only legacy endpoints, and the 4 FRED full-history series endpoints declared in `scripts/endpoints.mjs`; backfill-only endpoints must not enter the daily pipeline.
+- Endpoint allowlist is only the 21 daily endpoints, 9 current monthly endpoints, the TDCC weekly endpoint, the 2 MOPS monthly and 2 MOPS quarterly backfill endpoints, the TAIFEX monthly Put/Call Ratio, foreign-futures, and VIXTWN backfill endpoints, the 4 TWSE plus 4 TPEX daily backfill-only legacy endpoints, and the 4 FRED full-history series endpoints declared in `scripts/endpoints.mjs`; backfill-only endpoints must not enter the daily pipeline.
+- The 9 daily and 5 monthly current-only endpoints added by TICKET-299 are raw-only: daily files use the market anchor date, monthly files use the current Taipei month, and neither group may trigger derived or screener work or affect `latestTradingDate`.
 - Every `BACKFILL_ENDPOINTS` entry must declare `cadence` as `daily`, `monthly`, or `quarterly`; daily gap coverage is derived from the entries declared `daily` plus each market's close source.
 - CLI numeric flags in backfill and gap scripts must use `scripts/lib/cli.mjs`; a bare flag is invalid and must reach the existing numeric guard as `Number.NaN`.
 - Do not add other URLs, undocumented data sources, or FRED series beyond those declared in `SERIES_ENDPOINTS`.

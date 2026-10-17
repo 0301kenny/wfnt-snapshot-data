@@ -132,6 +132,7 @@ const MONTHLY_KEYS = ENDPOINTS.filter((endpoint) => endpoint.cadence === 'monthl
 const EXTRA_DAILY_KEYS = ENDPOINTS
   .filter((endpoint) => endpoint.market && endpoint.cadence !== 'monthly' && !DATASET_KEYS.includes(endpoint.key))
   .map((endpoint) => endpoint.key);
+const RAW_ONLY_KEYS = new Set(ENDPOINTS.filter((endpoint) => endpoint.rawOnly).map((endpoint) => endpoint.key));
 
 function normalizeSnapshotManifest(input) {
   const manifest = normalizeManifest(input);
@@ -420,7 +421,10 @@ export async function runSnapshot({
   now = () => new Date(),
   exRightDelayMs = 3000,
   exRightSleep,
+  applyDailyDateImpl = applyDailyDate,
+  applyMonthlyRevenueImpl = applyMonthlyRevenue,
 } = {}) {
+  const currentTaipeiMonth = taipeiIsoDate(now()).slice(0, 7);
   const selected = selectedEndpointKeys(datasets);
   const explicitTdcc = datasets?.includes('tdcc') ?? false;
   const manifestPath = join(rootDir, 'data', 'manifest.json');
@@ -505,7 +509,7 @@ export async function runSnapshot({
       continue;
     }
     const months = loaded.rows.map((row) => parseRocMonth(row?.['資料年月'])).filter(Boolean).sort();
-    const month = months.at(-1) ?? null;
+    const month = endpoint.useCurrentTaipeiMonth ? currentTaipeiMonth : (months.at(-1) ?? null);
     if (!month) {
       const error = 'schema: 資料年月欄不可解析';
       setDatasetError(manifest, endpoint.key, error);
@@ -604,12 +608,14 @@ export async function runSnapshot({
 
   const changedDailyDatesForDerived = new Set(
     results
-      .filter((result) => result.market && result.cadence !== 'monthly' && ['write', 'revise', 'forced'].includes(result.status))
+      .filter((result) => result.market && result.cadence !== 'monthly' && !RAW_ONLY_KEYS.has(result.key)
+        && ['write', 'revise', 'forced'].includes(result.status))
       .map((result) => result.date),
   );
   const changedMonthsForDerived = new Set(
     results
-      .filter((result) => result.cadence === 'monthly' && ['write', 'revise', 'forced'].includes(result.status))
+      .filter((result) => result.cadence === 'monthly' && !RAW_ONLY_KEYS.has(result.key)
+        && ['write', 'revise', 'forced'].includes(result.status))
       .map((result) => result.month),
   );
   const changedInsiderMonthsForDerived = new Set(
@@ -640,7 +646,7 @@ export async function runSnapshot({
   let screenerInputsApplied = false;
   for (const date of [...changedDailyDatesForDerived].sort()) {
     try {
-      const derived = await applyDailyDate(rootDir, date);
+      const derived = await applyDailyDateImpl(rootDir, date);
       screenerInputsApplied = true;
       console.log(`[derived] daily ${date}: symbols=${derived.symbols} fundamentals=${derived.fundamentals} market=${derived.market ? 'write' : 'same'}`);
     } catch (error) {
@@ -649,7 +655,7 @@ export async function runSnapshot({
   }
   for (const month of [...changedMonthsForDerived].sort()) {
     try {
-      const derived = await applyMonthlyRevenue(rootDir, month);
+      const derived = await applyMonthlyRevenueImpl(rootDir, month);
       console.log(`[derived] monthly ${month}: fundamentals=${derived.fundamentals}`);
     } catch (error) {
       console.error(`[error] derived monthly ${month}: ${error?.stack ?? error}`);

@@ -4,7 +4,7 @@ TW Stock Radar 的每日官方開放資料快照服務。
 
 - 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE/TPEX legacy 與 MOPS 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。
-- `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 12 個日更端點、4 個月更端點與 2 個除權息年度資料集,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
+- `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 21 個日更端點、9 個月更端點與 2 個除權息年度資料集,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
 
 ## Daily snapshot
 
@@ -22,6 +22,15 @@ TW Stock Radar 的每日官方開放資料快照服務。
 - `tpex_insider_transfer`
 - `twse_company_capital`
 - `tpex_company_capital`
+- `twse_material_info`
+- `tpex_material_info`
+- `twse_exright_forecast`
+- `tpex_exright_forecast`
+- `twse_trading_halt`
+- `twse_margin_suspension`
+- `tpex_trading_halt`
+- `tpex_short_suspension`
+- `twse_sbl_available`
 
 Raw 路徑固定為:
 
@@ -69,6 +78,18 @@ data/derived/corporate_actions/{p2}/{id}.json
 - `tpex_company_capital`（日更，`mopsfin_t187ap03_O`）
 
 這六支端點都沒有歷史回補,也不納入 `latestTradingDate`。月更持股會產生 `data/derived/insider/`,股本會投影到 `data/derived/capital_events.json` 並供 insider 計算使用,insider transfer 則沒有 derived 轉換。月更持股 raw 使用月頻路徑,四支日更 raw 使用一般日頻路徑；上市與上櫃的欄名逐端點獨立驗證,不假設跨市場一致。
+
+## Current-only raw snapshots
+
+另有 14 支官方只提供當期內容的端點從啟用日起前向累積，且只存 raw、不觸發任何 derived 或 screener 計算。九支日更端點是 `twse_material_info`、`tpex_material_info`、`twse_exright_forecast`、`tpex_exright_forecast`、`twse_trading_halt`、`twse_margin_suspension`、`tpex_trading_halt`、`tpex_short_suspension`、`twse_sbl_available`；raw 檔名一律使用同市場錨點日，不採用回應列內日期。
+
+五支月更端點是 `twse_holiday_schedule`、`twse_agm_notice`、`twse_agm_dates`、`twse_dividend`、`tpex_dividend`；raw 檔名使用執行當下的台北年月：
+
+```text
+data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json
+```
+
+同月內容變更時覆寫該月 raw，內容相同則不改寫。這 14 支端點不納入 `latestTradingDate`；重大訊息、除權息預告、停止交易與融券暫停等八支可能合法回傳空陣列的端點仍會保存原始 `[]`，`twse_sbl_available` 與五支月更端點則維持非空陣列驗證。
 
 ## TWSE/TPEX daily historical backfill
 
