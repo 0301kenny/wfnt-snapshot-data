@@ -4,7 +4,7 @@ This repo stores official public after-market snapshots for TW Stock Radar. It i
 
 Rules for agents:
 
-- Endpoint allowlist is only the 21 daily endpoints, 9 current monthly endpoints, the TDCC weekly endpoint, the 2 MOPS monthly and 2 MOPS quarterly backfill endpoints, the TAIFEX monthly Put/Call Ratio, foreign-futures, and VIXTWN backfill endpoints, the 4 TWSE plus 4 TPEX daily backfill-only legacy endpoints, and the 4 FRED full-history series endpoints declared in `scripts/endpoints.mjs`; backfill-only endpoints must not enter the daily pipeline.
+- Endpoint allowlist is only the 21 daily endpoints, 9 current monthly endpoints, the TDCC weekly endpoint, the 2 MOPS monthly and 2 MOPS quarterly backfill endpoints, the TAIFEX monthly Put/Call Ratio, foreign-futures, and VIXTWN backfill endpoints, the 4 TWSE plus 4 TPEX daily backfill-only legacy endpoints, the TWSE industry-name reference endpoint, and the 4 FRED full-history series endpoints declared in `scripts/endpoints.mjs`; backfill-only and reference-only endpoints must not enter the daily pipeline.
 - The 9 daily and 5 monthly current-only endpoints added by TICKET-299 are raw-only: daily files use the market anchor date, monthly files use the current Taipei month, and neither group may trigger derived or screener work or affect `latestTradingDate`.
 - Every `BACKFILL_ENDPOINTS` entry must declare `cadence` as `daily`, `monthly`, or `quarterly`; daily gap coverage is derived from the entries declared `daily` plus each market's close source.
 - CLI numeric flags in backfill and gap scripts must use `scripts/lib/cli.mjs`; a bare flag is invalid and must reach the existing numeric guard as `Number.NaN`.
@@ -35,3 +35,6 @@ Rules for agents:
 - Fundamentals series definitions belong in the single registry in `scripts/lib/derived.mjs`, including columns, default windows, updated-date participation, and metadata precedence.
 - Incremental derived updates in `scripts/run.mjs` and full rebuilds must share `scripts/lib/derived.mjs`; do not create a second transformation path.
 - Derived serialization must be deterministic and write-on-change only, so no-op reruns produce no byte-level diff.
+- TWSE sector index derived data includes only index names ending in `類指數`, prefers same-date OpenAPI raw over `mi_index_hist` table 0, and has no rolling window.
+- Industry classification uses each market's latest `company_capital` raw, keeps TWSE on cross-market symbol collisions, and resolves official names only from `data/raw/twse/industry_mi_index/{yyyy}/{date}_{code}.json`.
+- `REFERENCE_ENDPOINTS.twse_industry_mi_index` is backfill-only reference data. It must not be added to `ENDPOINTS`, `BACKFILL_ENDPOINTS`, `SERIES_ENDPOINTS`, the daily pipeline, or gap detection.

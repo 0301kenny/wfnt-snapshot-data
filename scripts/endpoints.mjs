@@ -328,6 +328,15 @@ export const SERIES_ENDPOINTS = [
   },
 ];
 
+// Reference-only official endpoints. These are intentionally excluded from the
+// scheduled snapshot, series, and generic backfill endpoint registries.
+export const REFERENCE_ENDPOINTS = {
+  twse_industry_mi_index: {
+    sourceDataset: 'twse/industry_mi_index',
+    url: (ymd, code) => `https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX?date=${ymd}&type=${code}&response=json`,
+  },
+};
+
 // Backfill-only official historical endpoints. These are intentionally separate from
 // ENDPOINTS so scripts/run.mjs never includes them in the daily pipeline.
 export const BACKFILL_ENDPOINTS = {

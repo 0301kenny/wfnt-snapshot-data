@@ -15,6 +15,7 @@ import {
   applyCapitalEvents,
   applyCorporateActions,
   applyDailyDate,
+  applyIndustryIndex,
   applyInsiderHoldingMonth,
   applyMacroSeries,
   applyMonthlyRevenue,
@@ -441,6 +442,7 @@ export async function runSnapshot({
   exRightDelayMs = 3000,
   exRightSleep,
   applyDailyDateImpl = applyDailyDate,
+  applyIndustryIndexImpl = applyIndustryIndex,
   applyMonthlyRevenueImpl = applyMonthlyRevenue,
 } = {}) {
   const currentTaipeiDate = taipeiIsoDate(now());
@@ -695,6 +697,12 @@ export async function runSnapshot({
       console.log(`[derived] capital events: rows=${derived.capitalEvents} file=${derived.written ? 'write' : 'same'}`);
     } catch (error) {
       console.error(`[error] derived capital events: ${error?.stack ?? error}`);
+    }
+    try {
+      const derived = await applyIndustryIndexImpl(rootDir);
+      console.log(`[derived] industry: codes=${derived.industries} file=${derived.written ? 'write' : 'same'}`);
+    } catch (error) {
+      console.error(`[error] derived industry: ${error?.stack ?? error}`);
     }
   }
   if (results.some((result) => EX_RIGHT_DATASET_KEYS.includes(result.key) && result.rawWritten > 0)) {
