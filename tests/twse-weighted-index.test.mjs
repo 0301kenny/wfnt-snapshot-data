@@ -99,10 +99,62 @@ test('TWSE weighted index parsers agree on both available overlapping raw dates'
   }
 });
 
+test('historical weighted index parser accepts the legacy official name', async () => {
+  await withTempDir(async (root) => {
+    const payload = weightedIndexHistFixture({ close: '9,876.54' });
+    payload.tables[0].data[0][0] = '加權股價指數';
+    await writeJsonRaw(root, 'twse/mi_index_hist', '2019-04-29', payload);
+    const fixture = JSON.parse(await readFile(
+      join(root, 'data', 'raw', 'twse/mi_index_hist', '2019', '2019-04-29.json'),
+      'utf8',
+    ));
+
+    assert.equal(parseTwseWeightedIndexHist(fixture), 9876.54);
+  });
+});
+
+test('historical weighted index parser prefers the current official name', async () => {
+  await withTempDir(async (root) => {
+    const payload = weightedIndexHistFixture({ close: '17,789.25' });
+    payload.tables[0].data.push(['加權股價指數', '9,876.54', '+', '1.00']);
+    await writeJsonRaw(root, 'twse/mi_index_hist', '2021-07-19', payload);
+    const fixture = JSON.parse(await readFile(
+      join(root, 'data', 'raw', 'twse/mi_index_hist', '2021', '2021-07-19.json'),
+      'utf8',
+    ));
+
+    assert.equal(parseTwseWeightedIndexHist(fixture), 17789.25);
+  });
+});
+
+test('historical weighted index parser keeps returning null for an empty table', async () => {
+  await withTempDir(async (root) => {
+    const payload = weightedIndexHistFixture();
+    payload.tables[0].data = [];
+    await writeJsonRaw(root, 'twse/mi_index_hist', '2006-10-16', payload);
+    const fixture = JSON.parse(await readFile(
+      join(root, 'data', 'raw', 'twse/mi_index_hist', '2006', '2006-10-16.json'),
+      'utf8',
+    ));
+
+    assert.equal(parseTwseWeightedIndexHist(fixture), null);
+  });
+});
+
 test('merged TWSE weighted index raw dates match the margin date oracle', async (t) => {
   const dailyDates = await rawDates('twse/mi_index');
   const historicalDates = await rawDates('twse/mi_index_hist');
-  const candidateDates = [...new Set([...dailyDates, ...historicalDates])].sort();
+  const market = JSON.parse(await readFile(join(repoRoot, 'data', 'derived', 'market.json'), 'utf8'));
+  const marginDates = market.twse.margin.rows.map((row) => row[0]).sort((a, b) => a - b);
+  const firstMarginDate = marginDates[0];
+  const lastMarginDate = marginDates.at(-1);
+  // 範圍外的 raw 是歷史回補只存的原始檔，要等 derived 重建後才會進入這條檢查。
+  const candidateDates = [...new Set([...dailyDates, ...historicalDates])]
+    .filter((date) => {
+      const numericDate = Number(date.replaceAll('-', ''));
+      return numericDate >= firstMarginDate && numericDate <= lastMarginDate;
+    })
+    .sort();
   const indexByDate = new Map();
 
   for (const date of candidateDates) {
@@ -113,9 +165,7 @@ test('merged TWSE weighted index raw dates match the margin date oracle', async 
     indexByDate.set(Number(date.replaceAll('-', '')), value);
   }
 
-  const market = JSON.parse(await readFile(join(repoRoot, 'data', 'derived', 'market.json'), 'utf8'));
   const indexDates = [...indexByDate.keys()].sort((a, b) => a - b);
-  const marginDates = market.twse.margin.rows.map((row) => row[0]).sort((a, b) => a - b);
   const indexSet = new Set(indexDates);
   const marginSet = new Set(marginDates);
   const onlyInIndex = indexDates.filter((date) => !marginSet.has(date));
