@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.wfnt.quarterly-refresh</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/zhengweizhu/Projects/wfnt-snapshot-data/scripts/quarterly-refresh.mjs</string>
+    <string>--refresh-recent</string>
+    <string>4</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/zhengweizhu/Projects/wfnt-snapshot-data</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Weekday</key>
+    <integer>7</integer>
+    <key>Hour</key>
+    <integer>10</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+  <key>StandardOutPath</key>
+  <string>/Users/zhengweizhu/Library/Logs/wfnt-quarterly-refresh.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/zhengweizhu/Library/Logs/wfnt-quarterly-refresh.log</string>
+</dict>
+</plist>

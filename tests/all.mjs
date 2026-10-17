@@ -10,6 +10,7 @@ import './gaps.test.mjs';
 import './monthly-backfill.test.mjs';
 import './quarterly-backfill.test.mjs';
 import './quarterly-financial-eps.test.mjs';
+import './quarterly-revisions.test.mjs';
 import './twse-weighted-index.test.mjs';
 import './sector-index.test.mjs';
 import './industry-index.test.mjs';
