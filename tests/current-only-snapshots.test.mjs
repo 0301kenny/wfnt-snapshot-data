@@ -34,6 +34,7 @@ const URLS = {
   twse_mi_margn: 'https://openapi.twse.com.tw/v1/exchangeReport/MI_MARGN',
   tpex_index: 'https://www.tpex.org.tw/openapi/v1/tpex_index',
   tpex_mainboard_close: 'https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes',
+  twse_monthly_revenue: 'https://openapi.twse.com.tw/v1/opendata/t187ap05_L',
   twse_material_info: 'https://openapi.twse.com.tw/v1/opendata/t187ap04_L',
   tpex_material_info: 'https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap04_O',
   twse_exright_forecast: 'https://openapi.twse.com.tw/v1/exchangeReport/TWT48U_ALL',
@@ -263,6 +264,56 @@ test('a core and raw-only daily write derives trading date and commit scope from
     assert.equal(summary.commitMessage, 'snapshot: 2026-10-30 [twse:stock_day_all]');
     assert.equal(summary.tradingDate, '2026-10-30');
   });
+});
+
+test('revise date uses the latest core change and ignores a later raw-only date', async () => {
+  const initialMonthlyBody = json([{
+    '資料年月': '11509',
+    '公司代號': '2330',
+    '營業收入-當月營收': '1',
+  }]);
+  const revisedMonthlyBody = json([{
+    '資料年月': '11509',
+    '公司代號': '2330',
+    '營業收入-當月營收': '2',
+  }]);
+
+  for (const includeLaterRawOnly of [false, true]) {
+    await withTempDir(async (root) => {
+      await runSnapshot({
+        rootDir: root,
+        fetcher: fetcherFor(fixtures({ twse_monthly_revenue: initialMonthlyBody }, '2026-10-17')),
+        datasets: ['twse_monthly_revenue'],
+        now: () => new Date('2026-10-17T12:00:00Z'),
+        applyMonthlyRevenueImpl: async () => ({ fundamentals: 0 }),
+      });
+
+      const overrides = {
+        twse_monthly_revenue: revisedMonthlyBody,
+        ...(includeLaterRawOnly ? {
+          tpex_index: json([{ Date: '20261018', Open: '1', High: '1', Low: '1', Close: '1' }]),
+        } : {}),
+      };
+      const datasets = ['twse_monthly_revenue', 'twse_stock_day_all'];
+      if (includeLaterRawOnly) datasets.push('tpex_material_info');
+      const summary = await runSnapshot({
+        rootDir: root,
+        fetcher: fetcherFor(fixtures(overrides, '2026-10-17')),
+        datasets,
+        now: () => new Date('2026-10-18T12:00:00Z'),
+        applyDailyDateImpl: async () => ({ symbols: 0, fundamentals: 0, market: false }),
+        applyMonthlyRevenueImpl: async () => ({ fundamentals: 0 }),
+      });
+
+      assert.equal(summary.results.find((result) => result.key === 'twse_monthly_revenue')?.status, 'revise');
+      assert.equal(summary.results.find((result) => result.key === 'twse_stock_day_all')?.date, '2026-10-17');
+      if (includeLaterRawOnly) {
+        assert.equal(summary.results.find((result) => result.key === 'tpex_material_info')?.date, '2026-10-18');
+      }
+      assert.equal(summary.commitMessage, 'revise: 2026-10-17 [twse:monthly_revenue]');
+      assert.equal(summary.commitMessage.startsWith('revise: 2026-10-17 ['), true);
+    });
+  }
 });
 
 test("tpex dividend ignores old 出表日期 and uses the injected clock's Taipei month", async () => {

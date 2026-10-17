@@ -383,6 +383,9 @@ function commitMessage(results, currentTaipeiDate) {
   const changedCurrentOnly = results.filter((result) => (
     RAW_ONLY_KEYS.has(result.key) && changedStatuses.includes(result.status)
   ));
+  const changedDates = new Set(results
+    .filter((result) => !RAW_ONLY_KEYS.has(result.key) && changedStatuses.includes(result.status))
+    .map((result) => result.date ?? result.month));
   const changedTdcc = results.filter((result) => result.key === 'tdcc' && ['write', 'revise', 'forced'].includes(result.status));
   const dailyChangedDates = results
     .filter((result) => result.market && result.cadence !== 'monthly' && !RAW_ONLY_KEYS.has(result.key)
@@ -392,7 +395,7 @@ function commitMessage(results, currentTaipeiDate) {
   const tradingDate = dailyChangedDates.at(-1) ?? null;
   const tdccDate = changedTdcc.map((result) => result.date).sort().at(-1) ?? null;
   if (revised.length > 0) {
-    const reviseDate = revised.map((result) => result.date ?? result.month).filter(Boolean).sort().at(-1) ?? tdccDate;
+    const reviseDate = [...changedDates].filter(Boolean).sort().at(-1) ?? tdccDate;
     return `revise: ${reviseDate} [${revised.map((result) => {
       if (result.key === 'tdcc') return 'tdcc';
       if (result.seriesId) return result.key;

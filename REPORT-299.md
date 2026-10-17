@@ -268,3 +268,58 @@ not ok 1 - only the eight approved daily endpoints accept an empty JSON array
 ```
 
 兩組消融皆已還原；其後完整測試為 249／249 綠燈。本修正輪未連網、未寫入真實 `data/`、未操作主目錄，且依指示未 commit。
+
+## 修正輪 2（Accepted Finding）
+
+### 修正內容
+
+- `scripts/run.mjs:386-388` 從所有成功寫入／修訂／強制寫入的結果重建 `changedDates`，但排除 `RAW_ONLY_KEYS`。
+- `scripts/run.mjs:398` 的 `reviseDate` 恢復原語意：取上述全部非 raw-only 變更日期／月份的字典序最大值，而不是只取 `revised` 結果自身日期。沒有 raw-only 參與時，集合與 base `999b89f` 原本的 `changedDates` 相同，因此既有輸出格式與日期選擇不變。
+- `tests/current-only-snapshots.test.mjs:269-317` 使用手寫期望值驗證兩個情境：既有月更 `2026-09` revise 加既有每日 `2026-10-17` write，訊息為 `revise: 2026-10-17 [twse:monthly_revenue]`；再加入 raw-only `2026-10-18` write，訊息仍完全相同。
+
+### 完整測試
+
+在 worktree 根目錄執行 `node --test tests/`：
+
+```text
+1..250
+# tests 250
+# suites 0
+# pass 250
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 10575.359362
+```
+
+### 修正輪 2 消融：只取 revised 自身日期
+
+暫時把 `reviseDate` 恢復成 `revised.map(result => result.date ?? result.month)` 的最大值，執行：
+
+```text
+$ node --test --test-name-pattern='revise date uses the latest core change' tests/current-only-snapshots.test.mjs
+# Subtest: revise date uses the latest core change and ignores a later raw-only date
+not ok 1 - revise date uses the latest core change and ignores a later raw-only date
+  error: |-
+    Expected values to be strictly equal:
+    + actual - expected
+
+    + 'revise: 2026-09 [twse:monthly_revenue]'
+    - 'revise: 2026-10-17 [twse:monthly_revenue]'
+1..1
+# tests 1
+# pass 0
+# fail 1
+```
+
+還原為全部非 raw-only 變更日期的最大值後：
+
+```text
+1..1
+# tests 1
+# pass 1
+# fail 0
+```
+
+消融已還原；其後完整測試為 250／250 綠燈。本修正輪 2 未連網、未寫入真實 `data/`、未操作主目錄，且依指示未 commit。
