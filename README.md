@@ -249,14 +249,18 @@ Derived 對每個市場、每個月份優先讀取既有 OpenAPI JSON;該月 Ope
 ```text
 data/raw/twse/quarterly_fin_hist/{yyyy}/{yyyy-Qn}.html
 data/raw/tpex/quarterly_fin_hist/{yyyy}/{yyyy-Qn}.html
+data/raw/{twse,tpex}/quarterly_fin_hist/{yyyy}/{yyyy-Qn}.rev-{Taipei YYYY-MM-DD}.html
 ```
 
-回補範圍用 `--from YYYY-Qn --to YYYY-Qn` 指定,`--from` 必須是 Q1,因為 Q2/Q3/Q4 的單季數字由同年前一季累計值差分取得。`--delay-ms` 預設 3000;目標檔已存在就跳過。可用 `--out` 將所有 raw 寫到隔離 root:
+回補範圍用 `--from YYYY-Qn --to YYYY-Qn` 指定,`--from` 必須是 Q1,因為 Q2/Q3/Q4 的單季數字由同年前一季累計值差分取得。`--delay-ms` 預設 3000;目標檔已存在就跳過。`--refresh-recent N` 會重抓範圍內最後 N 季：內容相同不寫檔，內容不同則以台北日期追加 `.rev-YYYY-MM-DD.html`，絕不覆蓋主檔。同日再次變更只更新當日修訂檔。可用 `--out` 將所有 raw 寫到隔離 root:
 
 ```bash
 node scripts/backfill-quarterly.mjs --from 2021-Q1 --to 2026-Q2
 node scripts/backfill-quarterly.mjs --from 2025-Q1 --to 2025-Q2 --out /tmp/wfnt-quarterly-backfill --delay-ms 3000
+node scripts/backfill-quarterly.mjs --from 2025-Q1 --to 2026-Q2 --refresh-recent 4 --out /tmp/wfnt-quarterly-refresh
 ```
+
+Derived 會依日期由舊到新合併主檔與所有修訂檔；新版新增或更新的公司採新版列，新版未列出的公司保留舊值。損壞的修訂檔會警告並略過。Q2–Q4 差分優先使用同市場前一季，同代號不存在時再查另一市場，以涵蓋轉上市／轉上櫃公司。
 
 舊的 `parseMopsQuarterlyFinHtml` 仍只選 header 含 `營業毛利（毛損）` 的一般業表，供 raw 驗證沿用。Derived 轉換另以表頭特徵辨識一般業、銀行、證券、金控、保險與其他業：一般業保留既有毛利率、營益率、淨利率算法；金融業只計算淨利率，`gm` 與 `om` 寫 `null`。沒有可用總收入的保險表不產出淨利率。Q1 直接使用累計絕對數；其餘季度先與同年前一季累計值差分。前一季 raw 或同代號列缺席、必要值缺失、單季收入非正數時不產出該季利潤率。
 
@@ -267,6 +271,26 @@ node scripts/rebuild-quarterly.mjs --out /tmp/wfnt-quarterly-rebuild
 ```
 
 `rebuild-quarterly.mjs` 依 raw 兩市場季度聯集由舊到新重建 fundamentals 的 `quarterly` 段與 `quarterly_eps.json`，不刪除 derived 檔，也不改 valuation 或 revenue 內容。
+
+### Weekly quarterly refresh
+
+`scripts/quarterly-refresh.mjs` 以台北日期計算範圍：從「上一個已結束季度所屬年份減一」的 Q1，到上一個已結束季度；預設重抓最後 4 季。只有新增主檔或修訂檔時才執行季度重算。手動隔離演練可用：
+
+```bash
+node scripts/quarterly-refresh.mjs --out /tmp/wfnt-quarterly-weekly --refresh-recent 4
+```
+
+repo 內的 `ops/launchd/com.wfnt.quarterly-refresh.plist` 是每週六 10:15 的安裝範本（避開每日 21:15 與集保 10:37）；本 repo 不會自行安裝。確認範本內路徑符合本機後，安裝／移除方式如下：
+
+```bash
+cp ops/launchd/com.wfnt.quarterly-refresh.plist ~/Library/LaunchAgents/
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.wfnt.quarterly-refresh.plist
+
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.wfnt.quarterly-refresh.plist
+rm ~/Library/LaunchAgents/com.wfnt.quarterly-refresh.plist
+```
+
+stdout 與 stderr 皆寫入 `~/Library/Logs/wfnt-quarterly-refresh.log`。
 
 ## TDCC weekly snapshot
 

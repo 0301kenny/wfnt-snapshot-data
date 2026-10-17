@@ -7,7 +7,12 @@ import { pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { BACKFILL_ENDPOINTS } from './endpoints.mjs';
 import { parseNumericFlag } from './lib/cli.mjs';
-import { parseMopsQuarterlyFinHtml } from './lib/derived.mjs';
+import { taipeiIsoDate } from './lib/date.mjs';
+import {
+  parseMopsQuarterlyFinHtml,
+  parseMopsQuarterlyFinTables,
+  readMopsQuarterlyFinTablesRaw,
+} from './lib/derived.mjs';
 import { writeFileEnsured } from './lib/io.mjs';
 
 const SEASON_RE = /^(\d{4})-Q([1-4])$/;
@@ -86,6 +91,45 @@ function rawPath(rootDir, sourceDataset, seasonKey) {
   );
 }
 
+function revisionPath(rootDir, sourceDataset, seasonKey, revisionDate) {
+  return join(
+    rootDir,
+    'data',
+    'raw',
+    sourceDataset,
+    seasonKey.slice(0, 4),
+    `${seasonKey}.rev-${revisionDate}.html`,
+  );
+}
+
+function comparableRows(rows) {
+  return rows
+    .map(({ id, revenue, grossProfit, operatingIncome, netIncome, eps }) => ({
+      id,
+      revenue,
+      grossProfit,
+      operatingIncome,
+      netIncome,
+      eps,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function rowsEqual(left, right) {
+  return JSON.stringify(comparableRows(left)) === JSON.stringify(comparableRows(right));
+}
+
+function mergeQuarterlyRows(existingRows, latestRows) {
+  const merged = new Map(existingRows.map((row) => [row.id, row]));
+  for (const row of latestRows) merged.set(row.id, row);
+  return [...merged.values()];
+}
+
+function isUnpublishedError(error) {
+  return error?.message?.includes('general-industry header missing')
+    || error?.message?.includes('0 general-industry data rows');
+}
+
 function formBody(typek, seasonKey) {
   const params = new URLSearchParams({
     encodeURIComponent: '1',
@@ -130,6 +174,8 @@ export async function runQuarterlyBackfill({
   fetchImpl = globalThis.fetch,
   sleepImpl = sleep,
   logger = console,
+  refreshRecent = 0,
+  now = () => new Date(),
 } = {}) {
   rootDir = resolve(rootDir);
   fromSeason = assertSeason('--from', fromSeason);
@@ -144,19 +190,29 @@ export async function runQuarterlyBackfill({
     throw new Error(`--delay-ms must be a non-negative number, got: ${delayMs}`);
   }
   if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
+  if (!Number.isInteger(refreshRecent) || refreshRecent < 0) {
+    throw new Error(`--refresh-recent must be a non-negative integer, got: ${refreshRecent}`);
+  }
+  if (typeof now !== 'function') throw new Error('now must be a function');
 
   const endpoints = [
     BACKFILL_ENDPOINTS.twse_quarterly_fin_hist,
     BACKFILL_ENDPOINTS.tpex_quarterly_fin_hist,
   ];
+  const seasons = [...seasonsAscending(fromSeason, toSeason)];
+  const refreshStart = Math.max(0, seasons.length - refreshRecent);
+  const unpublishedStart = Math.max(0, seasons.length - Math.max(refreshRecent, 1));
   const summary = { seasons: 0, requests: 0, skipped: 0, rawWritten: 0, rows: 0 };
+  if (refreshRecent > 0) Object.assign(summary, { revisions: 0, unchanged: 0, unpublished: 0 });
   logger.log(`[backfill-quarterly] range ${fromSeason}..${toSeason} out=${rootDir} delay=${delayMs}ms`);
 
-  for (const seasonKey of seasonsAscending(fromSeason, toSeason)) {
+  for (const [seasonIndex, seasonKey] of seasons.entries()) {
     summary.seasons += 1;
     for (const endpoint of endpoints) {
       const path = rawPath(rootDir, endpoint.sourceDataset, seasonKey);
-      if (await fileExists(path)) {
+      const mainExists = await fileExists(path);
+      const shouldRefresh = mainExists && seasonIndex >= refreshStart;
+      if (mainExists && !shouldRefresh) {
         summary.skipped += 1;
         logger.log(`[skip] ${endpoint.sourceDataset}: ${seasonKey}`);
         continue;
@@ -167,11 +223,41 @@ export async function runQuarterlyBackfill({
       try {
         rows = parseMopsQuarterlyFinHtml(bytes);
       } catch (error) {
+        if (seasonIndex >= unpublishedStart && isUnpublishedError(error)) {
+          if (refreshRecent > 0) summary.unpublished += 1;
+          logger.log(`[unpublished] ${endpoint.sourceDataset}: ${seasonKey}`);
+          continue;
+        }
         throw new Error(`${endpoint.url}: ${error.message}`);
       }
-      if (await writeRawBytesOnChange(path, bytes)) summary.rawWritten += 1;
       summary.rows += rows.length;
-      logger.log(`[write] ${endpoint.sourceDataset}: ${seasonKey} bytes=${bytes.length} rows=${rows.length}`);
+      if (!mainExists) {
+        if (await writeRawBytesOnChange(path, bytes)) summary.rawWritten += 1;
+        logger.log(`[write] ${endpoint.sourceDataset}: ${seasonKey} bytes=${bytes.length} rows=${rows.length}`);
+        continue;
+      }
+
+      const currentRows = parseMopsQuarterlyFinTables(bytes);
+      const existingRows = await readMopsQuarterlyFinTablesRaw(
+        rootDir,
+        endpoint.sourceDataset,
+        seasonKey,
+      );
+      const mergedRows = mergeQuarterlyRows(existingRows, currentRows);
+      if (rowsEqual(mergedRows, existingRows)) {
+        summary.unchanged += 1;
+        logger.log(`[same] ${endpoint.sourceDataset}: ${seasonKey}`);
+        continue;
+      }
+      const nextPath = revisionPath(
+        rootDir,
+        endpoint.sourceDataset,
+        seasonKey,
+        taipeiIsoDate(now()),
+      );
+      if (await writeRawBytesOnChange(nextPath, bytes)) summary.rawWritten += 1;
+      summary.revisions += 1;
+      logger.log(`[revise] ${endpoint.sourceDataset}: ${seasonKey} bytes=${bytes.length} rows=${rows.length}`);
     }
   }
 
@@ -185,6 +271,7 @@ export function quarterlyBackfillOptionsFromArgs(args) {
     fromSeason: args.from,
     toSeason: args.to,
     delayMs: parseNumericFlag(args['delay-ms'], 3000),
+    refreshRecent: parseNumericFlag(args['refresh-recent'], 0),
   };
 }
 

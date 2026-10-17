@@ -845,38 +845,60 @@ async function readMopsMonthlyRevenueRaw(rootDir, sourceDataset, monthKey) {
   return found ? rows : null;
 }
 
-async function readMopsQuarterlyFinRaw(rootDir, sourceDataset, seasonKey) {
-  const path = join(
+async function readMopsQuarterlyVersions(rootDir, sourceDataset, seasonKey, parser) {
+  const dir = join(
     rootDir,
     'data',
     'raw',
     sourceDataset,
     seasonKey.slice(0, 4),
-    `${seasonKey}.html`,
   );
+  const mainName = `${seasonKey}.html`;
+  let names;
   try {
-    return parseMopsQuarterlyFinHtml(await readFile(path));
+    names = await readdir(dir);
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
+  if (!names.includes(mainName)) return null;
+  const revisionRe = new RegExp(`^${seasonKey}\\.rev-\\d{4}-\\d{2}-\\d{2}\\.html$`);
+  const versionNames = [mainName, ...names.filter((name) => revisionRe.test(name)).sort()];
+  const mainRows = parser(await readFile(join(dir, mainName)));
+  if (versionNames.length === 1) return mainRows;
+  const merged = new Map();
+  for (const row of mainRows) merged.set(row.id, row);
+  for (const name of versionNames.slice(1)) {
+    let rows;
+    try {
+      const bytes = await readFile(join(dir, name));
+      if (parser !== parseMopsQuarterlyFinHtml) parseMopsQuarterlyFinHtml(bytes);
+      rows = parser(bytes);
+    } catch (error) {
+      console.warn(`[warn] derived: quarterly revision skipped path=${join(dir, name)} error=${error.message}`);
+      continue;
+    }
+    for (const row of rows) merged.set(row.id, row);
+  }
+  return [...merged.values()];
 }
 
-async function readMopsQuarterlyFinTablesRaw(rootDir, sourceDataset, seasonKey) {
-  const path = join(
+export async function readMopsQuarterlyFinRaw(rootDir, sourceDataset, seasonKey) {
+  return readMopsQuarterlyVersions(
     rootDir,
-    'data',
-    'raw',
     sourceDataset,
-    seasonKey.slice(0, 4),
-    `${seasonKey}.html`,
+    seasonKey,
+    parseMopsQuarterlyFinHtml,
   );
-  try {
-    return parseMopsQuarterlyFinTables(await readFile(path));
-  } catch (error) {
-    if (error.code === 'ENOENT') return null;
-    throw error;
-  }
+}
+
+export async function readMopsQuarterlyFinTablesRaw(rootDir, sourceDataset, seasonKey) {
+  return readMopsQuarterlyVersions(
+    rootDir,
+    sourceDataset,
+    seasonKey,
+    parseMopsQuarterlyFinTables,
+  );
 }
 
 async function readExistingJson(path, fallback) {
@@ -2161,14 +2183,26 @@ export async function applyQuarterlyFinancials(
   ];
   const quarterlyById = new Map();
   const epsById = new Map();
+  const rowsByDataset = new Map();
 
   for (const source of sources) {
-    const currentRows = await readMopsQuarterlyFinTablesRaw(rootDir, source.sourceDataset, seasonKey);
+    rowsByDataset.set(source.sourceDataset, {
+      current: await readMopsQuarterlyFinTablesRaw(rootDir, source.sourceDataset, seasonKey),
+      previous: previousSeasonKey === null
+        ? null
+        : await readMopsQuarterlyFinTablesRaw(rootDir, source.sourceDataset, previousSeasonKey),
+    });
+  }
+
+  for (const source of sources) {
+    const currentRows = rowsByDataset.get(source.sourceDataset).current;
     if (currentRows === null) continue;
-    const previousRows = previousSeasonKey === null
+    const previousRows = rowsByDataset.get(source.sourceDataset).previous;
+    const alternateSource = sources.find((candidate) => candidate.market !== source.market);
+    const alternatePreviousRows = previousSeasonKey === null
       ? null
-      : await readMopsQuarterlyFinTablesRaw(rootDir, source.sourceDataset, previousSeasonKey);
-    if (previousSeasonKey !== null && previousRows === null) {
+      : rowsByDataset.get(alternateSource.sourceDataset).previous;
+    if (previousSeasonKey !== null && previousRows === null && alternatePreviousRows === null) {
       console.warn(`[warn] derived: quarterly dataset=${source.sourceDataset} seasonKey=${seasonKey} previous raw missing; skipped=${currentRows.length}`);
       continue;
     }
@@ -2182,11 +2216,17 @@ export async function applyQuarterlyFinancials(
     for (const row of previousRows ?? []) {
       if (preferGeneral(previousById.get(row.id), row)) previousById.set(row.id, row);
     }
+    const alternatePreviousById = new Map();
+    for (const row of alternatePreviousRows ?? []) {
+      if (preferGeneral(alternatePreviousById.get(row.id), row)) alternatePreviousById.set(row.id, row);
+    }
     let missingPrevious = 0;
     let invalid = 0;
     for (const current of currentById.values()) {
       if (!isDerivedSymbolId(current.id)) continue;
-      const previous = previousSeasonKey === null ? null : previousById.get(current.id);
+      const previous = previousSeasonKey === null
+        ? null
+        : previousById.get(current.id) ?? alternatePreviousById.get(current.id);
       if (previousSeasonKey !== null && !previous) {
         missingPrevious += 1;
         continue;
