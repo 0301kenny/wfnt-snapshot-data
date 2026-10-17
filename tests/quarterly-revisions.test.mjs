@@ -222,6 +222,89 @@ test('revision merge adds new ids, retains omitted ids, and replaces existing id
   });
 });
 
+test('refresh compares merged outcomes when newer responses omit old companies', async () => {
+  await withTempDir(async (root) => {
+    const originalA = quarterlyRow({
+      id: '7001', name: 'A', revenue: 100, grossProfit: 40,
+      operatingIncome: 20, netIncome: 10, eps: 1,
+    });
+    const changedA = quarterlyRow({
+      id: '7001', name: 'A', revenue: 120, grossProfit: 48,
+      operatingIncome: 24, netIncome: 12, eps: 1.2,
+    });
+    const companyB = quarterlyRow({
+      id: '7002', name: 'B', revenue: 200, grossProfit: 80,
+      operatingIncome: 40, netIncome: 20, eps: 2,
+    });
+    const companyC = quarterlyRow({
+      id: '7003', name: 'C', revenue: 300, grossProfit: 120,
+      operatingIncome: 60, netIncome: 30, eps: 3,
+    });
+    const otc = makeOtcQuarterlyFixture();
+    const main = generalHtml([originalA, companyB]);
+    const onlyChangedA = generalHtml([changedA]);
+    const changedAWithC = generalHtml([changedA, companyC]);
+    await writeRaw(root, 'twse', '2025-Q1', main);
+    await writeRaw(root, 'tpex', '2025-Q1', otc);
+
+    const runDay = (date, sii) => runQuarterlyBackfill({
+      rootDir: root,
+      fromSeason: '2025-Q1',
+      toSeason: '2025-Q1',
+      refreshRecent: 1,
+      delayMs: 0,
+      sleepImpl: async () => {},
+      now: () => new Date(`${date}T00:00:00Z`),
+      fetchImpl: async (_url, options) => responseFor(
+        options.body.includes('TYPEK=sii') ? sii : otc,
+      ),
+      logger: silentLogger,
+    });
+
+    const first = await runDay('2026-10-17', onlyChangedA);
+    assert.deepEqual(first, {
+      seasons: 1, requests: 2, skipped: 0, rawWritten: 1, rows: 2,
+      revisions: 1, unchanged: 1, unpublished: 0,
+    });
+
+    let rebuildCalls = 0;
+    let second;
+    const refresh = await runQuarterlyRefresh({
+      rootDir: root,
+      now: () => new Date('2026-10-18T00:00:00Z'),
+      backfill: async () => {
+        second = await runDay('2026-10-18', onlyChangedA);
+        return second;
+      },
+      rebuild: async () => { rebuildCalls += 1; },
+      logger: silentLogger,
+    });
+    assert.deepEqual(second, {
+      seasons: 1, requests: 2, skipped: 0, rawWritten: 0, rows: 2,
+      revisions: 0, unchanged: 2, unpublished: 0,
+    });
+    assert.equal(refresh.rebuilt, null);
+    assert.equal(rebuildCalls, 0);
+    await assert.rejects(access(
+      join(root, 'data/raw/twse/quarterly_fin_hist/2025/2025-Q1.rev-2026-10-18.html'),
+    ));
+
+    const third = await runDay('2026-10-19', changedAWithC);
+    assert.deepEqual(third, {
+      seasons: 1, requests: 2, skipped: 0, rawWritten: 1, rows: 3,
+      revisions: 1, unchanged: 1, unpublished: 0,
+    });
+    assert.deepEqual(
+      await readFile(join(root, 'data/raw/twse/quarterly_fin_hist/2025/2025-Q1.html')),
+      main,
+    );
+    await access(join(
+      root,
+      'data/raw/twse/quarterly_fin_hist/2025/2025-Q1.rev-2026-10-19.html',
+    ));
+  });
+});
+
 test('main-only quarterly read remains identical to the established parser output', async () => {
   await withTempDir(async (root) => {
     const main = makeSiiQuarterlyFixture(1);

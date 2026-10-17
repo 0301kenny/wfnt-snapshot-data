@@ -119,6 +119,12 @@ function rowsEqual(left, right) {
   return JSON.stringify(comparableRows(left)) === JSON.stringify(comparableRows(right));
 }
 
+function mergeQuarterlyRows(existingRows, latestRows) {
+  const merged = new Map(existingRows.map((row) => [row.id, row]));
+  for (const row of latestRows) merged.set(row.id, row);
+  return [...merged.values()];
+}
+
 function isUnpublishedError(error) {
   return error?.message?.includes('general-industry header missing')
     || error?.message?.includes('0 general-industry data rows');
@@ -237,7 +243,8 @@ export async function runQuarterlyBackfill({
         endpoint.sourceDataset,
         seasonKey,
       );
-      if (rowsEqual(currentRows, existingRows)) {
+      const mergedRows = mergeQuarterlyRows(existingRows, currentRows);
+      if (rowsEqual(mergedRows, existingRows)) {
         summary.unchanged += 1;
         logger.log(`[same] ${endpoint.sourceDataset}: ${seasonKey}`);
         continue;

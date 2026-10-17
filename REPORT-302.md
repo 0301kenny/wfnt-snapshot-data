@@ -102,3 +102,42 @@ data/raw/tpex/quarterly_fin_hist/2026/2026-Q2.html
 ```json
 {"copied":["twse/Q1","twse/Q2","tpex/Q1","tpex/Q2"],"target":"4442","targetBeforeQ2":false,"targetAfterQ2":[20262,27.15,9.93,8.51],"controlId":"1101","controlByteStable":true,"beforeSummary":{"seasons":2,"fundamentals":3921,"eps":3937},"afterSummary":{"seasons":2,"fundamentals":3922,"eps":3938},"revisionBytes":1316770}
 ```
+
+## 修正輪：新版省略舊公司時的 revision 比較基準
+
+依 Orchestrator 接受的 P1 finding，`scripts/backfill-quarterly.mjs` 的 revision 判斷已改為：先把本次回應依同代號覆寫規則套進既有合併列，再比較套用前後的代號／數值集合（比較前依代號排序）。因此新版省略但舊版仍保留的公司不再造成每週重複寫檔。
+
+`tests/quarterly-revisions.test.mjs` 新增手寫期望值的三日序列：
+
+- 主檔 A、B；第一日只有數值已變的 A：`rawWritten=1`、`revisions=1`。
+- 第二日仍是同一個 A：套用前後都是變更後 A 加舊 B，故 `rawWritten=0`、`revisions=0`、`unchanged=2`，且季度 runner 的 rebuild 呼叫數為 0。
+- 第三日 A 加 C：合併結果新增 C，故 `rawWritten=1`、`revisions=1`。
+
+### 完整測試摘要
+
+```text
+$ node --test tests/
+1..296
+# tests 296
+# suites 0
+# pass 296
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 11182.488002
+```
+
+### 消融
+
+暫時把比較恢復為未合併的 `rowsEqual(currentRows, existingRows)`，執行：
+
+```text
+$ node --test --test-name-pattern="refresh compares merged outcomes" tests/quarterly-revisions.test.mjs
+1..1
+# tests 1
+# pass 0
+# fail 1
+```
+
+第二日錯誤地得到 `rawWritten=1, revisions=1, unchanged=1`，而手寫期望為 `rawWritten=0, revisions=0, unchanged=2`；測試在 `tests/quarterly-revisions.test.mjs:282` 轉紅。還原為合併前後比較後，完整套件 296/296 通過。
