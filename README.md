@@ -77,7 +77,32 @@ data/derived/corporate_actions/{p2}/{id}.json
 - `twse_company_capital`（日更，`t187ap03_L`）
 - `tpex_company_capital`（日更，`mopsfin_t187ap03_O`）
 
-這六支端點都沒有歷史回補,也不納入 `latestTradingDate`。月更持股會產生 `data/derived/insider/`,股本會投影到 `data/derived/capital_events.json` 並供 insider 計算使用,insider transfer 則沒有 derived 轉換。月更持股 raw 使用月頻路徑,四支日更 raw 使用一般日頻路徑；上市與上櫃的欄名逐端點獨立驗證,不假設跨市場一致。
+這六支端點都沒有歷史回補,也不納入 `latestTradingDate`。月更持股會產生 `data/derived/insider/`,股本會投影到 `data/derived/capital_events.json` 與 `data/derived/industry.json` 並供 insider 計算使用,insider transfer 則沒有 derived 轉換。月更持股 raw 使用月頻路徑,四支日更 raw 使用一般日頻路徑；上市與上櫃的欄名逐端點獨立驗證,不假設跨市場一致。
+
+## Sector index and industry classification
+
+`data/derived/sector_index.json` 保存 TWSE 名稱以「類指數」結尾的每日收盤序列。每個日期優先使用 `twse/mi_index` OpenAPI raw，缺席時才使用 `twse/mi_index_hist` table 0；同日重跑覆寫該日值，序列不套 rolling window。日更與全量重建共用 `scripts/lib/derived.mjs` 的逐日轉換，也可只重建此檔：
+
+```bash
+node scripts/rebuild-sector-index.mjs --out /tmp/wfnt-sector-rebuild
+```
+
+`data/derived/industry.json` 使用上市與上櫃各自最新一天的 `company_capital` raw，記錄股票代號、市場與產業代碼；同代號跨市場時上市優先。純數字六碼代號依其他 derived 的相同規則排除。`industries` 對照名稱來自 TWSE 官方 `MI_INDEX?type=<code>` 回應的每日收盤行情標題，沒有名稱時保留 `null`。
+
+產業名稱是 reference-only 歷史回補，不在每日排程、一般 backfill 或 gap detection 內。回補會保留每個代碼的官方 JSON 原始 bytes：
+
+```text
+data/raw/twse/industry_mi_index/{yyyy}/{date}_{code}.json
+```
+
+正式資料由 Orchestrator 授權後執行；開發與驗證應一律以 `--out` 指向隔離 root：
+
+```bash
+node scripts/backfill-industry-names.mjs --date 2026-10-16 --out /tmp/wfnt-industry-names --delay-ms 3000
+node scripts/build-industry-index.mjs --out /tmp/wfnt-industry-names
+```
+
+回補日期必須早於台北今天；每個最新股本 raw 出現的產業代碼各請求一次。可解析的既有 raw 直接略過，HTTP 或 JSON 失敗會記錄該代碼、繼續其他代碼，最後以非零狀態結束。
 
 ## Current-only raw snapshots
 

@@ -10,6 +10,8 @@ import './gaps.test.mjs';
 import './monthly-backfill.test.mjs';
 import './quarterly-backfill.test.mjs';
 import './twse-weighted-index.test.mjs';
+import './sector-index.test.mjs';
+import './industry-index.test.mjs';
 import './fred.test.mjs';
 import './taifex-pcr.test.mjs';
 import './taifex-foreign-futures.test.mjs';

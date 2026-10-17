@@ -4,6 +4,7 @@ import {
   applyCapitalEvents,
   applyCorporateActions,
   applyDailyDate,
+  applyIndustryIndex,
   applyInsiderHoldingMonth,
   applyMacroSeries,
   applyMonthlyRevenue,
@@ -185,6 +186,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
   }
 
   const capitalEvents = await applyCapitalEvents(rootDir);
+  const industry = await applyIndustryIndex(rootDir);
   const corporateActions = await applyCorporateActions(rootDir);
 
   const quarterlySeasons = new Set();
@@ -214,6 +216,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     monthlyMonths: sortedMonthlyMonths.length,
     insiderMonths: sortedInsiderMonths.length,
     capitalEvents: capitalEvents.capitalEvents,
+    industries: industry.industries,
     corporateActions: corporateActions.corporateActions,
     quarterlySeasons: sortedQuarterlySeasons.length,
     tdccWeeks: weeks.length,
@@ -225,7 +228,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} insider_months=${summary.insiderMonths} capital_events=${summary.capitalEvents} corporate_actions=${summary.corporateActions} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} insider_months=${summary.insiderMonths} capital_events=${summary.capitalEvents} industries=${summary.industries} corporate_actions=${summary.corporateActions} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);

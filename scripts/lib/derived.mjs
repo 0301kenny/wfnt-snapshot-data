@@ -46,6 +46,7 @@ const TAIFEX_FUT_COLS = ['d', 'net'];
 const TAIFEX_VIX_COLS = ['d', 'vix'];
 const INSIDER_COLS = ['m', 'dirPct', 'dirPledgePct', 'insPct', 'insPledgePct', 'issued'];
 const CAPITAL_EVENT_COLS = ['id', 'from', 'to', 'before', 'after'];
+const INDUSTRY_COLS = ['id', 'market', 'code'];
 const CORPORATE_ACTION_COLS = ['d', 'pre', 'ref', 'kind'];
 const INSIDER_MARKET_FIELDS = Object.freeze({
   twse: Object.freeze({
@@ -402,6 +403,31 @@ export function parseTwseWeightedIndexHist(payload) {
   const row = table.data.find((item) => item?.[indexes.name] === '發行量加權股價指數')
     ?? table.data.find((item) => item?.[indexes.name] === '加權股價指數');
   return row ? compactNumber(row[indexes.close]) : null;
+}
+
+export function parseTwseSectorIndexes(rows) {
+  if (!Array.isArray(rows)) throw new Error('TWSE sector index: rows is not an array');
+  const parsed = [];
+  for (const row of rows) {
+    const name = String(row?.['指數'] ?? '').trim();
+    const close = compactNumber(row?.['收盤指數']);
+    if (!name.endsWith('類指數') || close === null) continue;
+    parsed.push([name, close]);
+  }
+  return parsed;
+}
+
+export function parseTwseSectorIndexesHist(payload) {
+  const table = requiredLegacyTable(payload, 0, 'MI_INDEX sector index');
+  if (table.data.length === 0) return [];
+  const indexes = requiredFieldIndexes(table.fields, {
+    name: '指數',
+    close: '收盤指數',
+  }, 'MI_INDEX sector index');
+  return parseTwseSectorIndexes(table.data.map((row) => ({
+    '指數': row?.[indexes.name],
+    '收盤指數': row?.[indexes.close],
+  })));
 }
 
 export function parseTwseMiIndexHist(payload) {
@@ -782,6 +808,123 @@ async function writeDerivedJson(path, value) {
   }
   await writeFileEnsured(path, next);
   return true;
+}
+
+export async function applySectorIndexDate(rootDir, isoDate) {
+  const openApiRows = await readJsonRaw(rootDir, 'twse/mi_index', isoDate);
+  const histPayload = openApiRows === null
+    ? await readJsonRaw(rootDir, 'twse/mi_index_hist', isoDate)
+    : null;
+  const values = openApiRows !== null
+    ? parseTwseSectorIndexes(openApiRows)
+    : histPayload === null ? [] : parseTwseSectorIndexesHist(histPayload);
+  if (values.length === 0) return { sectorIndexes: 0, written: false };
+
+  const path = join(rootDir, 'data', 'derived', 'sector_index.json');
+  const current = await readExistingJson(path, { updated: null, names: [], series: {} });
+  const series = { ...(current?.series ?? {}) };
+  const date = isoToInt(isoDate);
+  for (const [name, close] of values) {
+    const item = series[name] ?? { cols: ['d', 'c'], rows: [] };
+    series[name] = {
+      cols: ['d', 'c'],
+      rows: upsertRows(item.rows ?? [], [date, close], null),
+    };
+  }
+  const names = Object.keys(series).sort((left, right) => left.localeCompare(right));
+  const orderedSeries = Object.fromEntries(names.map((name) => [name, series[name]]));
+  let latestDate = null;
+  for (const name of names) {
+    for (const row of orderedSeries[name].rows) {
+      if (latestDate === null || row[0] > latestDate) latestDate = row[0];
+    }
+  }
+  const updated = latestDate === null ? null : intToIso(latestDate);
+  const written = await writeDerivedJson(path, { updated, names, series: orderedSeries });
+  return { sectorIndexes: values.length, written };
+}
+
+const COMPANY_INDUSTRY_FIELDS = Object.freeze({
+  twse: Object.freeze({ id: '公司代號', code: '產業別' }),
+  tpex: Object.freeze({ id: 'SecuritiesCompanyCode', code: 'SecuritiesIndustryCode' }),
+});
+
+export async function latestCompanyIndustryRows(rootDir) {
+  let updated = null;
+  const byId = new Map();
+  const codes = new Set();
+  for (const market of ['tpex', 'twse']) {
+    const sourceDataset = `${market}/company_capital`;
+    const dates = await listJsonDates(join(rootDir, 'data', 'raw', sourceDataset));
+    const date = dates.at(-1);
+    if (!date) continue;
+    const rawRows = await readJsonRaw(rootDir, sourceDataset, date);
+    if (!Array.isArray(rawRows)) throw new Error(`${sourceDataset} ${date}: rows is not an array`);
+    if (updated === null || date > updated) updated = date;
+    const fields = COMPANY_INDUSTRY_FIELDS[market];
+    for (const rawRow of rawRows) {
+      const id = String(rawRow?.[fields.id] ?? '').trim();
+      const code = String(rawRow?.[fields.code] ?? '').trim();
+      if (code !== '') codes.add(code);
+      if (!isDerivedSymbolId(id) || code === '') continue;
+      byId.set(id, [id, market, code]);
+    }
+  }
+  return {
+    updated,
+    rows: [...byId.values()].sort((left, right) => left[0].localeCompare(right[0])),
+    codes: [...codes].sort((left, right) => left.localeCompare(right)),
+  };
+}
+
+function industryNameFromPayload(payload) {
+  for (const table of payload?.tables ?? []) {
+    const match = String(table?.title ?? '').match(/每日收盤行情[（(]([^()（）]*)[）)]/);
+    if (!match) continue;
+    const name = match[1].trim();
+    return name === '' ? null : name;
+  }
+  return null;
+}
+
+async function latestIndustryNames(rootDir, codes) {
+  const wanted = new Set(codes);
+  const latestByCode = new Map();
+  const dir = join(rootDir, 'data', 'raw', 'twse', 'industry_mi_index');
+  try {
+    for (const year of await readdir(dir, { withFileTypes: true })) {
+      if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
+      for (const file of await readdir(join(dir, year.name), { withFileTypes: true })) {
+        const match = file.isFile() && /^(\d{4}-\d{2}-\d{2})_(.+)\.json$/.exec(file.name);
+        if (!match || !wanted.has(match[2])) continue;
+        const previous = latestByCode.get(match[2]);
+        if (!previous || match[1] > previous.date) {
+          latestByCode.set(match[2], { date: match[1], path: join(dir, year.name, file.name) });
+        }
+      }
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  const names = new Map();
+  for (const code of codes) {
+    const latest = latestByCode.get(code);
+    names.set(code, latest ? industryNameFromPayload(await readJsonIfExists(latest.path, null)) : null);
+  }
+  return names;
+}
+
+export async function applyIndustryIndex(rootDir) {
+  const { updated, rows } = await latestCompanyIndustryRows(rootDir);
+  if (updated === null) return { industries: 0, written: false };
+  const codes = [...new Set(rows.map((row) => row[2]))].sort((left, right) => left.localeCompare(right));
+  const names = await latestIndustryNames(rootDir, codes);
+  const industries = Object.fromEntries(codes.map((code) => [code, names.get(code) ?? null]));
+  const written = await writeDerivedJson(
+    join(rootDir, 'data', 'derived', 'industry.json'),
+    { updated, industries, cols: INDUSTRY_COLS, rows },
+  );
+  return { industries: codes.length, written };
 }
 
 export async function repairTwseDividendYield(rootDir = process.cwd()) {
@@ -1550,6 +1693,8 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
   const tpexValuation = tpexValuationHistRaw === null ? null : parseTpexPeHist(tpexValuationHistRaw);
   const twseSbl = twseSblRaw === null ? null : parseTwseSblDerived(twseSblRaw);
   const tpexSbl = tpexSblRaw === null ? null : parseTpexSblDerived(tpexSblRaw);
+
+  await applySectorIndexDate(rootDir, isoDate);
 
   const twseMarginById = mapBy(twseMargin, '股票代號');
   const twseT86ById = mapBy(twseT86, 'id');
