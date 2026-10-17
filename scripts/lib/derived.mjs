@@ -61,6 +61,7 @@ const INSIDER_MARKET_FIELDS = Object.freeze({
   }),
 });
 export const QUARTERLY_COLS = ['q', 'gm', 'om', 'nm'];
+export const QUARTERLY_EPS_COLS = ['q', 'eps'];
 export const FUNDAMENTAL_SERIES = Object.freeze({
   valuation: Object.freeze({
     cols: VALUATION_COLS,
@@ -234,6 +235,77 @@ export function parseMopsQuarterlyFinHtml(bytes) {
   }
   if (!header) throw new Error('MOPS quarterly financials: general-industry header missing');
   if (rows.length === 0) throw new Error('MOPS quarterly financials: response has 0 general-industry data rows');
+  return rows;
+}
+
+function mopsQuarterlyTableKind(header) {
+  if (header.includes(MOPS_QUARTERLY_FIELDS.grossProfit)) return 'general';
+  if (header.includes('淨收益')) return 'holding';
+  if (header.includes('利息淨收益')
+    && header.includes('利息以外淨損益')
+    && !header.includes('淨收益')) return 'bank';
+  if (header.includes('收益') && header.includes('支出及費用')) return 'securities';
+  if (header.includes('保險服務結果')
+    || (header.includes(MOPS_QUARTERLY_FIELDS.revenue)
+      && !header.includes(MOPS_QUARTERLY_FIELDS.grossProfit))) return 'insurance';
+  if (header.includes('收入') && header.includes('支出')) return 'other';
+  return null;
+}
+
+export function parseMopsQuarterlyFinTables(bytes) {
+  const html = decodeMopsQuarterlyHtml(bytes);
+  const rows = [];
+  let header = null;
+  let kind = null;
+  for (const rowMatch of html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi)) {
+    const cells = [...rowMatch[1].matchAll(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi)]
+      .map((match) => mopsCellText(match[1]));
+    if (cells[0] === MOPS_QUARTERLY_FIELDS.id) {
+      header = cells;
+      kind = mopsQuarterlyTableKind(header);
+      if (kind === null) {
+        console.warn(`[warn] derived: unrecognized MOPS quarterly table header=${JSON.stringify(header)}`);
+      }
+      continue;
+    }
+    if (kind === null || header === null
+      || !/^\d{4}$/.test(cells[0] ?? '')
+      || cells.length !== header.length) continue;
+    const cell = (field) => {
+      const index = header.indexOf(field);
+      return index === -1 ? null : compactNumber(cells[index]);
+    };
+    let revenue = null;
+    if (kind === 'general' || kind === 'insurance') {
+      revenue = cell(MOPS_QUARTERLY_FIELDS.revenue);
+    } else if (kind === 'holding') {
+      revenue = cell('淨收益');
+    } else if (kind === 'bank') {
+      const interest = cell('利息淨收益');
+      const nonInterest = cell('利息以外淨損益');
+      revenue = interest === null || nonInterest === null ? null : interest + nonInterest;
+    } else if (kind === 'securities') {
+      revenue = cell('收益');
+    } else if (kind === 'other') {
+      revenue = cell('收入');
+    }
+    const netIncomeField = header.includes(MOPS_QUARTERLY_FIELDS.netIncome)
+      ? MOPS_QUARTERLY_FIELDS.netIncome
+      : '本期稅後淨利（淨損）';
+    const epsField = header.includes('基本每股盈餘（元）')
+      ? '基本每股盈餘（元）'
+      : '基本每股盈餘';
+    rows.push({
+      id: cells[header.indexOf(MOPS_QUARTERLY_FIELDS.id)],
+      name: cells[header.indexOf(MOPS_QUARTERLY_FIELDS.name)],
+      kind,
+      revenue,
+      grossProfit: kind === 'general' ? cell(MOPS_QUARTERLY_FIELDS.grossProfit) : null,
+      operatingIncome: kind === 'general' ? cell(MOPS_QUARTERLY_FIELDS.operatingIncome) : null,
+      netIncome: cell(netIncomeField),
+      eps: cell(epsField),
+    });
+  }
   return rows;
 }
 
@@ -784,6 +856,23 @@ async function readMopsQuarterlyFinRaw(rootDir, sourceDataset, seasonKey) {
   );
   try {
     return parseMopsQuarterlyFinHtml(await readFile(path));
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function readMopsQuarterlyFinTablesRaw(rootDir, sourceDataset, seasonKey) {
+  const path = join(
+    rootDir,
+    'data',
+    'raw',
+    sourceDataset,
+    seasonKey.slice(0, 4),
+    `${seasonKey}.html`,
+  );
+  try {
+    return parseMopsQuarterlyFinTables(await readFile(path));
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
@@ -1467,6 +1556,39 @@ export async function reconcileFundamentalPeriod(rootDir, kind, key, presentIds)
   return written;
 }
 
+export async function replaceQuarterlyDerived(rootDir, desiredRootDir) {
+  const desiredById = new Map();
+  for (const path of await listFundamentalPaths(desiredRootDir)) {
+    const item = await readExistingJson(path, null);
+    if (item) desiredById.set(String(item.id), item);
+  }
+  let fundamentals = 0;
+  for (const path of await listFundamentalPaths(rootDir)) {
+    const current = await readExistingJson(path, null);
+    if (!current) continue;
+    const desired = desiredById.get(String(current.id));
+    const next = {
+      ...current,
+      quarterly: desired?.quarterly ?? { cols: QUARTERLY_COLS, rows: [] },
+    };
+    if (await writeDerivedJson(path, next)) fundamentals += 1;
+    desiredById.delete(String(current.id));
+  }
+  for (const [id, desired] of desiredById) {
+    const path = join(rootDir, 'data', 'derived', 'fundamentals', p2(id), `${id}.json`);
+    if (await writeDerivedJson(path, desired)) fundamentals += 1;
+  }
+  const desiredEps = await readExistingJson(
+    join(desiredRootDir, 'data', 'derived', 'quarterly_eps.json'),
+    { updated: null, cols: QUARTERLY_EPS_COLS, series: {} },
+  );
+  const epsWritten = await writeDerivedJson(
+    join(rootDir, 'data', 'derived', 'quarterly_eps.json'),
+    desiredEps,
+  );
+  return { fundamentals, epsWritten };
+}
+
 function normalizeMarket(input) {
   return {
     updated: input?.updated ?? null,
@@ -2038,39 +2160,56 @@ export async function applyQuarterlyFinancials(
     { sourceDataset: 'tpex/quarterly_fin_hist', market: 'tpex' },
   ];
   const quarterlyById = new Map();
+  const epsById = new Map();
 
   for (const source of sources) {
-    const currentRows = await readMopsQuarterlyFinRaw(rootDir, source.sourceDataset, seasonKey);
+    const currentRows = await readMopsQuarterlyFinTablesRaw(rootDir, source.sourceDataset, seasonKey);
     if (currentRows === null) continue;
     const previousRows = previousSeasonKey === null
       ? null
-      : await readMopsQuarterlyFinRaw(rootDir, source.sourceDataset, previousSeasonKey);
+      : await readMopsQuarterlyFinTablesRaw(rootDir, source.sourceDataset, previousSeasonKey);
     if (previousSeasonKey !== null && previousRows === null) {
       console.warn(`[warn] derived: quarterly dataset=${source.sourceDataset} seasonKey=${seasonKey} previous raw missing; skipped=${currentRows.length}`);
       continue;
     }
-    const previousById = new Map((previousRows ?? []).map((row) => [row.id, row]));
+    const preferGeneral = (selected, row) => selected === undefined
+      || (selected.kind !== 'general' && row.kind === 'general');
+    const currentById = new Map();
+    for (const row of currentRows) {
+      if (preferGeneral(currentById.get(row.id), row)) currentById.set(row.id, row);
+    }
+    const previousById = new Map();
+    for (const row of previousRows ?? []) {
+      if (preferGeneral(previousById.get(row.id), row)) previousById.set(row.id, row);
+    }
     let missingPrevious = 0;
     let invalid = 0;
-    for (const current of currentRows) {
+    for (const current of currentById.values()) {
       if (!isDerivedSymbolId(current.id)) continue;
       const previous = previousSeasonKey === null ? null : previousById.get(current.id);
       if (previousSeasonKey !== null && !previous) {
         missingPrevious += 1;
         continue;
       }
-      const absolute = [
-        current.revenue,
-        current.grossProfit,
-        current.operatingIncome,
-        current.netIncome,
-      ];
-      const previousAbsolute = previous === null ? null : [
-        previous.revenue,
-        previous.grossProfit,
-        previous.operatingIncome,
-        previous.netIncome,
-      ];
+      if (current.eps !== null && (previous === null || previous.eps !== null)) {
+        const singleQuarterEps = previous === null ? current.eps : current.eps - previous.eps;
+        const currentWinner = epsById.get(current.id);
+        if (!currentWinner || source.market === 'twse') {
+          epsById.set(current.id, {
+            source,
+            row: current,
+            eps: round2(singleQuarterEps),
+          });
+        }
+      }
+
+      const fields = current.kind === 'general'
+        ? ['revenue', 'grossProfit', 'operatingIncome', 'netIncome']
+        : ['revenue', 'netIncome'];
+      const absolute = fields.map((field) => current[field]);
+      const previousAbsolute = previous === null
+        ? null
+        : fields.map((field) => previous[field]);
       if (absolute.some((value) => value === null)
         || previousAbsolute?.some((value) => value === null)) {
         invalid += 1;
@@ -2084,7 +2223,10 @@ export async function applyQuarterlyFinancials(
         continue;
       }
       const currentWinner = quarterlyById.get(current.id);
-      if (!currentWinner || source.market === 'twse') {
+      if (!currentWinner
+        || (currentWinner.row.kind !== 'general' && current.kind === 'general')
+        || ((currentWinner.row.kind === 'general') === (current.kind === 'general')
+          && source.market === 'twse')) {
         quarterlyById.set(current.id, {
           source,
           row: current,
@@ -2099,20 +2241,47 @@ export async function applyQuarterlyFinancials(
 
   let written = 0;
   for (const [id, { source, row, values }] of [...quarterlyById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    const [revenue, grossProfit, operatingIncome, netIncome] = values;
+    const [revenue, ...profits] = values;
+    const marginRow = row.kind === 'general'
+      ? [
+          quarterKey,
+          round2((profits[0] / revenue) * 100),
+          round2((profits[1] / revenue) * 100),
+          round2((profits[2] / revenue) * 100),
+        ]
+      : [quarterKey, null, null, round2((profits[0] / revenue) * 100)];
     const didWrite = await upsertFundamental(rootDir, {
       id,
       name: row.name,
       market: source.market,
-    }, 'quarterly', [
-      quarterKey,
-      round2((grossProfit / revenue) * 100),
-      round2((operatingIncome / revenue) * 100),
-      round2((netIncome / revenue) * 100),
-    ], quarterlyWindow);
+    }, 'quarterly', marginRow, quarterlyWindow);
     if (didWrite) written += 1;
   }
-  return { fundamentals: written };
+
+  const epsPath = join(rootDir, 'data', 'derived', 'quarterly_eps.json');
+  const currentEps = await readExistingJson(epsPath, {
+    updated: null,
+    cols: QUARTERLY_EPS_COLS,
+    series: {},
+  });
+  const series = { ...(currentEps?.series ?? {}) };
+  for (const [id, { eps }] of [...epsById.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+    series[id] = upsertRows(series[id] ?? [], [quarterKey, eps], quarterlyWindow);
+  }
+  const orderedIds = Object.keys(series).sort((left, right) => left.localeCompare(right));
+  const orderedSeries = Object.fromEntries(orderedIds.map((id) => [id, series[id]]));
+  const latestQuarter = orderedIds
+    .flatMap((id) => orderedSeries[id].map((item) => item[0]))
+    .sort((left, right) => left - right)
+    .at(-1) ?? null;
+  const epsWritten = await writeDerivedJson(epsPath, {
+    updated: latestQuarter === null
+      ? null
+      : `${String(latestQuarter).slice(0, 4)}-Q${String(latestQuarter).slice(4)}`,
+    cols: QUARTERLY_EPS_COLS,
+    series: orderedSeries,
+  });
+  return { fundamentals: written, eps: epsById.size, epsWritten };
 }
 
 export function parseCsvLine(line) {

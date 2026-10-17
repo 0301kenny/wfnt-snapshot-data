@@ -258,7 +258,15 @@ node scripts/backfill-quarterly.mjs --from 2021-Q1 --to 2026-Q2
 node scripts/backfill-quarterly.mjs --from 2025-Q1 --to 2025-Q2 --out /tmp/wfnt-quarterly-backfill --delay-ms 3000
 ```
 
-解析只選 header 含 `營業毛利（毛損）` 的一般業表,以 header 文字定位營業收入、營業毛利、營業利益與本期淨利。Q1 直接使用累計絕對數;其餘季度先對四個絕對數做差分再計算三率。前一季 raw 或同代號前一季列缺席、必要值缺失、單季營業收入非正數時不產出該季列。
+舊的 `parseMopsQuarterlyFinHtml` 仍只選 header 含 `營業毛利（毛損）` 的一般業表，供 raw 驗證沿用。Derived 轉換另以表頭特徵辨識一般業、銀行、證券、金控、保險與其他業：一般業保留既有毛利率、營益率、淨利率算法；金融業只計算淨利率，`gm` 與 `om` 寫 `null`。沒有可用總收入的保險表不產出淨利率。Q1 直接使用累計絕對數；其餘季度先與同年前一季累計值差分。前一季 raw 或同代號列缺席、必要值缺失、單季收入非正數時不產出該季利潤率。
+
+全產業單季 EPS 寫入 `data/derived/quarterly_eps.json`，欄位為 `q,eps`，同樣以 Q1 直接值與 Q2–Q4 累計差分產生，每檔保留最近 24 季。需要只重建季資料時，使用隔離 root 執行：
+
+```bash
+node scripts/rebuild-quarterly.mjs --out /tmp/wfnt-quarterly-rebuild
+```
+
+`rebuild-quarterly.mjs` 依 raw 兩市場季度聯集由舊到新重建 fundamentals 的 `quarterly` 段與 `quarterly_eps.json`，不刪除 derived 檔，也不改 valuation 或 revenue 內容。
 
 ## TDCC weekly snapshot
 

@@ -32,6 +32,9 @@ Rules for agents:
 - `data/derived/` is a generated read-optimization layer. Raw snapshots remain authoritative, and derived files must be fully rebuildable from raw with `scripts/build-derived.mjs`.
 - Derived symbol outputs must exclude only pure numeric 6-character IDs (`/^\d{6}$/`). Use the same rule for daily symbol series and TDCC series.
 - Fundamentals derived outputs use the same pure numeric 6-character ID exclusion rule and combine daily TWSE/TPEX valuation, monthly TWSE/TPEX revenue, and MOPS quarterly general-industry margins; monthly OpenAPI raw takes priority, with MOPS historical raw as fallback.
+- Quarterly financial derived parsing covers all recognized MOPS industry tables by header features. General-industry margin bytes stay unchanged; non-general tables may emit net margin only, with `gm` and `om` null, and tables without positive single-quarter revenue emit no margin row.
+- `data/derived/quarterly_eps.json` contains all-industry single-quarter EPS, uses the same cumulative-quarter differencing and symbol exclusion rules as fundamentals, prefers TWSE on collisions, and keeps 24 quarters per symbol.
+- `scripts/rebuild-quarterly.mjs` rebuilds only fundamentals `quarterly` rows and `quarterly_eps.json` from quarterly raw in ascending season order. It must not delete derived files or change valuation or revenue rows.
 - Fundamentals series definitions belong in the single registry in `scripts/lib/derived.mjs`, including columns, default windows, updated-date participation, and metadata precedence.
 - Incremental derived updates in `scripts/run.mjs` and full rebuilds must share `scripts/lib/derived.mjs`; do not create a second transformation path.
 - Derived serialization must be deterministic and write-on-change only, so no-op reruns produce no byte-level diff.
