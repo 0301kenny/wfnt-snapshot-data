@@ -427,6 +427,11 @@ export const BACKFILL_ENDPOINTS = {
     sourceDataset: 'taifex/vix_monthly',
     url: (monthKey) => `https://www.taifex.com.tw/file/taifex/Dailydownload/vix/log2data/${monthKey.replace('-', '')}new.txt`,
   },
+  tpex_index_hist: {
+    cadence: 'monthly',
+    sourceDataset: 'tpex/index_hist',
+    url: (monthKey) => `https://www.tpex.org.tw/www/zh-tw/indexInfo/inx?date=${monthKey.slice(0, 4)}/${monthKey.slice(5, 7)}/01&response=json`,
+  },
 };
 
 export function endpointByKey(key) {

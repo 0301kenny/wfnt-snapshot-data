@@ -13,6 +13,7 @@ import {
   applyTaifexPcrMonth,
   applyTaifexVixMonth,
   applyTdccWeek,
+  applyTpexIndexMonth,
 } from './lib/derived.mjs';
 import { listCsvGzDates, listHtmlMonths, listJsonDates } from './lib/io.mjs';
 
@@ -139,6 +140,13 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
     await applyDailyDate(rootDir, date);
   }
 
+  const tpexIndexMonths = await listJsonMonths(
+    join(rootDir, 'data', 'raw', 'tpex', 'index_hist'),
+  );
+  for (const month of tpexIndexMonths) {
+    await applyTpexIndexMonth(rootDir, month);
+  }
+
   const taifexPcrMonths = await listTaifexMonths(
     join(rootDir, 'data', 'raw', 'taifex', 'pcr'),
     'csv',
@@ -210,6 +218,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
   const files = await countFiles(derivedDir);
   return {
     dailyDates: sortedDailyDates.length,
+    tpexIndexMonths: tpexIndexMonths.length,
     taifexPcrMonths: taifexPcrMonths.length,
     taifexForeignFuturesMonths: taifexForeignFuturesMonths.length,
     taifexVixMonths: taifexVixMonths.length,
@@ -228,7 +237,7 @@ export async function buildDerived({ rootDir = process.cwd() } = {}) {
 if (import.meta.url === `file://${process.argv[1]}`) {
   try {
     const summary = await buildDerived();
-    console.log(`derived daily_dates=${summary.dailyDates} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} insider_months=${summary.insiderMonths} capital_events=${summary.capitalEvents} industries=${summary.industries} corporate_actions=${summary.corporateActions} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
+    console.log(`derived daily_dates=${summary.dailyDates} tpex_index_months=${summary.tpexIndexMonths} taifex_pcr_months=${summary.taifexPcrMonths} taifex_foreign_futures_months=${summary.taifexForeignFuturesMonths} taifex_vix_months=${summary.taifexVixMonths} monthly_months=${summary.monthlyMonths} insider_months=${summary.insiderMonths} capital_events=${summary.capitalEvents} industries=${summary.industries} corporate_actions=${summary.corporateActions} quarterly_seasons=${summary.quarterlySeasons} tdcc_weeks=${summary.tdccWeeks} macro_series=${summary.macroSeries} files=${summary.files}`);
   } catch (error) {
     console.error(error?.stack ?? error);
     process.exit(1);

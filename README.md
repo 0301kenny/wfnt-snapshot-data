@@ -49,7 +49,7 @@ Raw 檔是權威層,內容保持官方回應位元組,不重排、不美化、�
 - `twse_ex_right`（TWSE `TWT49U`）
 - `tpex_ex_right`（TPEX `exDailyQ`）
 
-兩個資料集從 2021 年開始,每市場每個日曆年保留一份官方 JSON 原始 bytes:
+每日快照仍從 2021 年開始,每市場每個日曆年保留一份官方 JSON 原始 bytes:
 
 ```text
 data/raw/twse/ex_right/{yyyy}/{yyyy}.json
@@ -65,6 +65,13 @@ data/derived/corporate_actions/{p2}/{id}.json
 ```
 
 每列為 `['d', 'pre', 'ref', 'kind']`,日期正規化為 ISO,價格轉為數字,種類統一為 `權`／`息`／`權息`。這兩個年度資料集不納入 `latestTradingDate`;日常寫入與 `scripts/build-derived.mjs` 全量重建共用同一個轉換函式。
+
+2021 年以前的歷史年度由獨立 CLI 回補；`--to-year` 必須早於台北當年，0 列年份會顯示 `[empty]` 且不落 raw。完成指定範圍後只重建一次 corporate actions：
+
+```bash
+node scripts/backfill-ex-right.mjs --market twse --from-year 2006 --to-year 2020 --out /tmp/wfnt-ex-right
+node scripts/backfill-ex-right.mjs --market tpex --from-year 2006 --to-year 2020 --out /tmp/wfnt-ex-right
+```
 
 ## Current-only insider and company snapshots
 
@@ -135,7 +142,19 @@ data/raw/tpex/sbl_hist/{yyyy}/{date}.json
 
 TWSE 與 TPEX 各自獨立判斷交易日與 openapi 是否存在。當日已有 `twse/stock_day_all` raw 時,MI_INDEX 與 MI_MARGN 不重複抓取;已有 `tpex/mainboard_close` raw 時則跳過 dailyQuotes、dailyTrade、balance 三個 TPEX legacy 端點。承重的 MI_INDEX 與 dailyQuotes 在需要判斷交易日時仍會 fetch；其他純資料端點若目標 raw 已存在,會在 fetch 前略過。Derived 優先使用已有 openapi,只在對應 openapi 缺席時以 hist 補位,並共用日更的單一轉換路徑；借券 raw 本票不接 derived。範圍回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
 
-所有 backfill-only 來源都在 `scripts/endpoints.mjs` 的 `BACKFILL_ENDPOINTS` 宣告 cadence；10 個 legacy JSON 來源為 `daily`、兩個月營收來源為 `monthly`、兩個季度財報來源為 `quarterly`。缺口覆蓋只取 `daily` 項目再加上各市場 close source。
+所有 backfill-only 來源都在 `scripts/endpoints.mjs` 的 `BACKFILL_ENDPOINTS` 宣告 cadence；10 個 legacy JSON 來源為 `daily`、兩個月營收與一個櫃買歷史指數來源為 `monthly`、兩個季度財報來源為 `quarterly`。缺口覆蓋只取 `daily` 項目再加上各市場 close source。
+
+櫃買歷史指數以月查詢回補，官方 JSON bytes 原樣保存於：
+
+```text
+data/raw/tpex/index_hist/{yyyy}/{yyyy-mm}.json
+```
+
+合法月檔必須是 `stat: "ok"`、固定六欄且至少一列。歷史月份已有合法 raw 即跳過，台北當月則每次重抓並 write-on-change。Derived 逐列 upsert 至 `market.json` 的 `tpex.index`；同日若存在 `tpex/index` OpenAPI raw，OpenAPI 值優先。全量重建與 CLI 增量寫入共用相同轉換函式：
+
+```bash
+node scripts/backfill-tpex-index.mjs --from 2006-10 --to 2026-10 --out /tmp/wfnt-tpex-index --delay-ms 3000
+```
 
 手動用法(預設寫本 repo `data/`;`--out` 可指向 scratch root):
 

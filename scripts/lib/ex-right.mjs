@@ -115,7 +115,7 @@ function validateResponse(endpoint, bytes) {
     if (parsed?.stat !== 'OK' || !Array.isArray(parsed?.fields) || !Array.isArray(parsed?.data)) {
       return { ok: false, retryable: false, error: 'schema: TWSE ex_right 回應格式無效' };
     }
-    return { ok: true };
+    return { ok: true, rows: parsed.data.length };
   }
   const table = parsed?.tables?.[0];
   if (!table || !Array.isArray(table.fields) || !Array.isArray(table.data)
@@ -137,7 +137,7 @@ function validateResponse(endpoint, bytes) {
       error: `schema: TPEX ex_right rows ${table.data.length}/${totalCount}`,
     };
   }
-  return { ok: true };
+  return { ok: true, rows: table.data.length };
 }
 
 async function responseBytes(response) {
@@ -171,7 +171,12 @@ async function fetchYear(endpoint, year, today, {
       return { ok: false, error: error?.message ? `fetch: ${error.message}` : 'fetch: failed' };
     }
     const validation = validateResponse(endpoint, bytes);
-    if (validation.ok) return { ok: true, bytes, endDate: request.endDate };
+    if (validation.ok) return {
+      ok: true,
+      bytes,
+      endDate: request.endDate,
+      rows: validation.rows,
+    };
     lastError = validation.error;
     if (!validation.retryable) return { ok: false, error: lastError };
   }
@@ -183,13 +188,29 @@ export async function fetchExRightDataset(rootDir, key, today, {
   sleepImpl = defaultSleep,
   delayMs = 3000,
   maxAttempts = 3,
+  startYear = EX_RIGHT_START_YEAR,
+  endYear = Number(today.slice(0, 4)),
+  skipEmpty = false,
 } = {}) {
   const endpoint = EX_RIGHT_DATASETS[key];
   if (!endpoint) throw new Error(`unknown ex_right dataset: ${key}`);
   const currentYear = Number(today.slice(0, 4));
+  if (!Number.isInteger(startYear) || startYear < 1) {
+    throw new Error(`startYear must be a positive integer, got: ${startYear}`);
+  }
+  if (!Number.isInteger(endYear) || endYear < 1) {
+    throw new Error(`endYear must be a positive integer, got: ${endYear}`);
+  }
+  if (startYear > endYear) {
+    throw new Error(`startYear must be <= endYear, got: ${startYear} > ${endYear}`);
+  }
+  if (endYear > currentYear) {
+    throw new Error(`endYear must not exceed current year ${currentYear}, got: ${endYear}`);
+  }
   const requestState = { count: 0 };
   let rawWritten = 0;
-  for (let year = EX_RIGHT_START_YEAR; year <= currentYear; year += 1) {
+  const emptyYears = [];
+  for (let year = startYear; year <= endYear; year += 1) {
     const path = exRightRawPath(rootDir, endpoint.market, year);
     if (year !== currentYear && await isCompleteHistoricalRaw(path, endpoint.market, year)) continue;
     const fetched = await fetchYear(endpoint, year, today, {
@@ -208,6 +229,10 @@ export async function fetchExRightDataset(rootDir, key, today, {
         rawWritten,
       };
     }
+    if (skipEmpty && fetched.rows === 0) {
+      emptyYears.push(year);
+      continue;
+    }
     if (await writeRawBytesOnChange(path, fetched.bytes)) rawWritten += 1;
   }
   const years = await listExRightYears(rootDir, endpoint.market);
@@ -221,5 +246,6 @@ export async function fetchExRightDataset(rootDir, key, today, {
     latest: today,
     years: years.length,
     rawWritten,
+    emptyYears,
   };
 }

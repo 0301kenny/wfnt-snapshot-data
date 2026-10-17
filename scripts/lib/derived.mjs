@@ -168,6 +168,42 @@ export function compactTwseDividendYield(value) {
   return typeof value === 'string' && value.trim() === '' ? 0 : compactNumber(value);
 }
 
+const TPEX_INDEX_HIST_FIELDS = Object.freeze(['日期', '開市', '最高', '最低', '收市', '漲/跌']);
+
+export function parseTpexIndexHist(payload, monthKey) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(monthKey ?? ''))) {
+    throw new Error(`TPEX index history: invalid month key ${monthKey}`);
+  }
+  if (payload?.stat !== 'ok') {
+    throw new Error(`TPEX index history ${monthKey}: stat is not ok`);
+  }
+  const table = payload?.tables?.[0];
+  if (!table || !Array.isArray(table.fields)
+    || table.fields.length !== TPEX_INDEX_HIST_FIELDS.length
+    || table.fields.some((field, index) => field !== TPEX_INDEX_HIST_FIELDS[index])) {
+    throw new Error(`TPEX index history ${monthKey}: fields mismatch`);
+  }
+  if (!Array.isArray(table.data) || table.data.length === 0) {
+    throw new Error(`TPEX index history ${monthKey}: response has 0 data rows`);
+  }
+  return table.data.map((row, index) => {
+    if (!Array.isArray(row) || row.length < TPEX_INDEX_HIST_FIELDS.length) {
+      throw new Error(`TPEX index history ${monthKey}: invalid row ${index + 1}`);
+    }
+    const date = parseGregorianDate(row[0]);
+    if (!date || !date.startsWith(`${monthKey}-`)) {
+      throw new Error(`TPEX index history ${monthKey}: invalid row date ${row[0]}`);
+    }
+    return [
+      isoToInt(date),
+      compactNumber(row[1]),
+      compactNumber(row[2]),
+      compactNumber(row[3]),
+      compactNumber(row[4]),
+    ];
+  });
+}
+
 function decodeHtmlEntities(value) {
   return value.replace(/&(#\d+|#x[\da-f]+|nbsp|amp|lt|gt|quot|apos);/gi, (entity, token) => {
     const lower = token.toLowerCase();
@@ -1671,6 +1707,37 @@ export async function applyTaifexPcrMonth(rootDir, monthKey) {
   refreshMarketUpdated(market);
   return {
     rows: rows.length,
+    market: await writeDerivedJson(marketPath, market),
+  };
+}
+
+export async function applyTpexIndexMonth(rootDir, monthKey) {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(String(monthKey ?? ''))) {
+    throw new Error(`TPEX index history: invalid month key ${monthKey}`);
+  }
+  const path = join(
+    rootDir,
+    'data',
+    'raw',
+    'tpex',
+    'index_hist',
+    monthKey.slice(0, 4),
+    `${monthKey}.json`,
+  );
+  const rows = parseTpexIndexHist(JSON.parse(await readFile(path, 'utf8')), monthKey);
+  const marketPath = join(rootDir, 'data', 'derived', 'market.json');
+  const market = normalizeMarket(await readExistingJson(marketPath, MARKET_TEMPLATE));
+  let applied = 0;
+  for (const row of rows) {
+    const date = intToIso(row[0]);
+    if (await readJsonRaw(rootDir, 'tpex/index', date) !== null) continue;
+    upsertSeries(market.tpex.index, row);
+    applied += 1;
+  }
+  refreshMarketUpdated(market);
+  return {
+    rows: rows.length,
+    applied,
     market: await writeDerivedJson(marketPath, market),
   };
 }
