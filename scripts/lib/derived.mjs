@@ -399,7 +399,8 @@ export function parseTwseWeightedIndexHist(payload) {
     name: '指數',
     close: '收盤指數',
   }, 'MI_INDEX weighted index');
-  const row = table.data.find((item) => item?.[indexes.name] === '發行量加權股價指數');
+  const row = table.data.find((item) => item?.[indexes.name] === '發行量加權股價指數')
+    ?? table.data.find((item) => item?.[indexes.name] === '加權股價指數');
   return row ? compactNumber(row[indexes.close]) : null;
 }
 
