@@ -371,7 +371,7 @@ data/raw/taifex/vix_monthly/{yyyy}/{yyyy-mm}.txt     月檔，官方 Big5 tab-se
 - **FRED 四序列**（`DTWEXBGS`／`DEXTAUS`／`T10Y2Y`／`VIXCLS`）走 `SERIES_ENDPOINTS`，
   是第三個 endpoint registry：無 `market`、無 anchor、URL 不吃日期。
   derived 落**獨立的 `data/derived/macro.json`**（整條序列形態，與 `market.json` 的逐日 upsert 不同），
-  日期下限 `20210101`，每條序列帶 `attribution`（`VIXCLS` 為 `CBOE`，消費端展示必須標註）。
+  日期下限 `20061016`，每條序列帶 `attribution`（`VIXCLS` 為 `CBOE`，消費端展示必須標註）。
 - **TAIFEX PCR**、**外資期貨**與 **VIXTWN** 三者共用 `scripts/lib/taifex-monthly-backfill.mjs`
   （一請求一個月、退避重試、write-on-change），derived upsert 進 `market.json` 的
   `taifex.pcr`（`["d","vol","oi"]`）、`taifex.fut`（`["d","net"]`）與 `taifex.vix`（`["d","vix"]`）。
