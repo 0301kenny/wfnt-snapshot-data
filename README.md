@@ -2,6 +2,30 @@
 
 TW Stock Radar 的每日官方開放資料快照服務。
 
+## Full derived rebuild
+
+全量重建使用旁建目錄 `data/.derived-build/root/data/derived/`，進度保存在
+`data/.derived-build/progress.json`。中斷後以相同命令續跑；完成補齊後才切換成
+`data/derived/`，舊版保留為 `data/derived.prev-<台北 YYYYMMDDHHmm>`（同分鐘重複
+切換會加流水號），程式不會自動刪除舊版。
+
+```bash
+# 建置（或續跑）、補齊、切換
+node scripts/build-derived.mjs
+
+# 只建置與補齊，保留暫存供稍後切換
+node scripts/build-derived.mjs --build-only
+
+# 放棄旁建進度後從頭建置；不會刪除現用 derived 或 derived.prev-*
+node scripts/build-derived.mjs --reset
+
+# 開發與演練必須使用隔離 root
+node scripts/build-derived.mjs --out /tmp/wfnt-derived-rebuild
+```
+
+CLI 在台北時間每日 21:00–22:00 與週日 10:00–11:00 只拒絕最後切換；已完成的
+旁建與進度會保留，允許時段再執行相同命令即可補齊並切換。
+
 - 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE/TPEX legacy 與 MOPS 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。
 - `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 21 個日更端點、9 個月更端點與 2 個除權息年度資料集,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。

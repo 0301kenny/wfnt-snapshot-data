@@ -958,25 +958,43 @@ async function writeDerivedJson(path, value) {
 }
 
 export async function applySectorIndexDate(rootDir, isoDate) {
-  const openApiRows = await readJsonRaw(rootDir, 'twse/mi_index', isoDate);
-  const histPayload = openApiRows === null
-    ? await readJsonRaw(rootDir, 'twse/mi_index_hist', isoDate)
-    : null;
-  const values = openApiRows !== null
-    ? parseTwseSectorIndexes(openApiRows)
-    : histPayload === null ? [] : parseTwseSectorIndexesHist(histPayload);
-  if (values.length === 0) return { sectorIndexes: 0, written: false };
+  const result = await buildSectorIndexForDates(rootDir, [isoDate], {
+    initial: await readExistingJson(
+      join(rootDir, 'data', 'derived', 'sector_index.json'),
+      { updated: null, names: [], series: {} },
+    ),
+  });
+  return { sectorIndexes: result.sectorIndexes, written: result.written };
+}
 
+export async function buildSectorIndexForDates(rootDir, isoDates, { initial, onWrite } = {}) {
   const path = join(rootDir, 'data', 'derived', 'sector_index.json');
-  const current = await readExistingJson(path, { updated: null, names: [], series: {} });
+  const current = initial === undefined
+    ? await readExistingJson(path, { updated: null, names: [], series: {} })
+    : initial ?? { updated: null, names: [], series: {} };
   const series = { ...(current?.series ?? {}) };
-  const date = isoToInt(isoDate);
-  for (const [name, close] of values) {
-    const item = series[name] ?? { cols: ['d', 'c'], rows: [] };
-    series[name] = {
-      cols: ['d', 'c'],
-      rows: upsertRows(item.rows ?? [], [date, close], null),
-    };
+  let sectorIndexes = 0;
+  for (const isoDate of isoDates) {
+    const openApiRows = await readJsonRaw(rootDir, 'twse/mi_index', isoDate);
+    const histPayload = openApiRows === null
+      ? await readJsonRaw(rootDir, 'twse/mi_index_hist', isoDate)
+      : null;
+    const values = openApiRows !== null
+      ? parseTwseSectorIndexes(openApiRows)
+      : histPayload === null ? [] : parseTwseSectorIndexesHist(histPayload);
+    if (values.length === 0) continue;
+    sectorIndexes += values.length;
+    const date = isoToInt(isoDate);
+    for (const [name, close] of values) {
+      const item = series[name] ?? { cols: ['d', 'c'], rows: [] };
+      series[name] = {
+        cols: ['d', 'c'],
+        rows: upsertRows(item.rows ?? [], [date, close], null),
+      };
+    }
+  }
+  if (sectorIndexes === 0 && Object.keys(series).length === 0) {
+    return { sectorIndexes: 0, written: false };
   }
   const names = Object.keys(series).sort((left, right) => left.localeCompare(right));
   const orderedSeries = Object.fromEntries(names.map((name) => [name, series[name]]));
@@ -988,7 +1006,8 @@ export async function applySectorIndexDate(rootDir, isoDate) {
   }
   const updated = latestDate === null ? null : intToIso(latestDate);
   const written = await writeDerivedJson(path, { updated, names, series: orderedSeries });
-  return { sectorIndexes: values.length, written };
+  if (written) await onWrite?.(path);
+  return { sectorIndexes, written };
 }
 
 const COMPANY_INDUSTRY_FIELDS = Object.freeze({
@@ -1836,7 +1855,10 @@ function sumField(rows, field) {
   return used ? total : null;
 }
 
-export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_SYMBOL_WINDOW } = {}) {
+export async function applyDailyDate(rootDir, isoDate, {
+  symbolWindow = DEFAULT_SYMBOL_WINDOW,
+  applySectorIndex = true,
+} = {}) {
   const ymd = isoToInt(isoDate);
   const written = { symbols: 0, fundamentals: 0, market: false };
   const [
@@ -1905,7 +1927,7 @@ export async function applyDailyDate(rootDir, isoDate, { symbolWindow = DEFAULT_
   const twseSbl = twseSblRaw === null ? null : parseTwseSblDerived(twseSblRaw);
   const tpexSbl = tpexSblRaw === null ? null : parseTpexSblDerived(tpexSblRaw);
 
-  await applySectorIndexDate(rootDir, isoDate);
+  if (applySectorIndex) await applySectorIndexDate(rootDir, isoDate);
 
   const twseMarginById = mapBy(twseMargin, '股票代號');
   const twseT86ById = mapBy(twseT86, 'id');
