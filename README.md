@@ -30,6 +30,10 @@ CLI 在台北時間每日 21:00–22:00 與週日 10:00–11:00 只拒絕最後�
 最後切換包含兩次目錄改名；若程序恰在兩次改名之間終止，`data/derived/` 會暫時
 不存在。重跑同一指令即會完成切換；舊版仍保留在 `data/derived.prev-*`。
 
+切換結果反映的是**最後一次檢查當下**的 raw。最後檢查之後（含檢查到切換之間的
+毫秒空窗）才寫入的 raw，與切換後才寫入的 raw 一樣不在結果中，要等下一次重建。
+因此全量重建應在 `history-backfill` 停止時執行（人類 2026-10-19 裁決接受此殘餘風險）。
+
 - 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE/TPEX legacy 與 MOPS 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。
 - `scripts/run.mjs` + `snapshot` workflow 會在每個平日台北 17:37/19:37/21:37 抓取 21 個日更端點、9 個月更端點與 2 個除權息年度資料集,並在週六/日台北 10:37 視需要抓取 TDCC 週更端點,把官方 response body 原樣落地到 `data/raw/`,並維護 `data/manifest.json`。
