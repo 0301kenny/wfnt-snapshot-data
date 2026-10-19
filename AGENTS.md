@@ -42,6 +42,7 @@ Rules for agents:
 - Fundamentals series definitions belong in the single registry in `scripts/lib/derived.mjs`, including columns, default windows, updated-date participation, and metadata precedence.
 - Incremental derived updates in `scripts/run.mjs` and full rebuilds must share `scripts/lib/derived.mjs`; do not create a second transformation path.
 - Derived serialization must be deterministic and write-on-change only, so no-op reruns produce no byte-level diff.
+- Full derived rebuilds must stage under `data/.derived-build/`, checkpoint progress, catch up raw before switching, and preserve every prior active tree as `data/derived.prev-*`; never delete active or previous derived trees as rebuild cleanup.
 - TWSE sector index derived data includes only index names ending in `類指數`, prefers same-date OpenAPI raw over `mi_index_hist` table 0, and has no rolling window.
 - Industry classification uses each market's latest `company_capital` raw, keeps TWSE on cross-market symbol collisions, and resolves official names only from `data/raw/twse/industry_mi_index/{yyyy}/{date}_{code}.json`.
 - `REFERENCE_ENDPOINTS.twse_industry_mi_index` is backfill-only reference data. It must not be added to `ENDPOINTS`, `BACKFILL_ENDPOINTS`, `SERIES_ENDPOINTS`, the daily pipeline, or gap detection.
