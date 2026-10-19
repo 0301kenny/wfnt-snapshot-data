@@ -21,6 +21,7 @@ import './taifex-vix.test.mjs';
 import './taifex-current-month.test.mjs';
 import './ex-right.test.mjs';
 import './ex-right-history.test.mjs';
+import './ex-right-roc-short-year.test.mjs';
 import './tpex-index-hist.test.mjs';
 import './tdcc-holders50.test.mjs';
 import './tdcc-lock.test.mjs';

@@ -1213,7 +1213,7 @@ export async function applyCapitalEvents(rootDir) {
 }
 
 function parseTwseCorporateActionDate(value) {
-  const match = String(value ?? '').trim().match(/^(\d{3})年(\d{1,2})月(\d{1,2})日$/);
+  const match = String(value ?? '').trim().match(/^(\d{2,3})年(\d{1,2})月(\d{1,2})日$/);
   if (!match) return null;
   return parseRocDate(`${match[1]}/${match[2]}/${match[3]}`);
 }
