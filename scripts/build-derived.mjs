@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import {
+  cp,
   lstat,
   mkdir,
   readFile,
@@ -28,7 +29,7 @@ import {
 } from './lib/derived.mjs';
 import { listCsvGzDates, listHtmlMonths, listJsonDates, writeFileEnsured } from './lib/io.mjs';
 
-const BUILD_VERSION = 1;
+const BUILD_VERSION = 2;
 const BUILD_DIR_NAME = '.derived-build';
 
 const DAILY_SOURCES = [
@@ -236,10 +237,20 @@ async function collectInputs(rootDir) {
   };
 }
 
+async function collectStableInputs(rootDir) {
+  for (;;) {
+    const before = await nonDailyFingerprint(rootDir);
+    const inputs = await collectInputs(rootDir);
+    const after = await nonDailyFingerprint(rootDir);
+    if (before === after) return { inputs, nonDailyFingerprint: after };
+  }
+}
+
 function emptyCompleted() {
   return {
     daily: [],
     sector: false,
+    dailyBase: false,
     tpexIndex: [],
     pcr: [],
     foreignFutures: [],
@@ -302,12 +313,13 @@ async function prepareBuild(rootDir, buildDir) {
 }
 
 async function createProgress(rootDir, progressPath) {
-  const inputs = await collectInputs(rootDir);
+  const stable = await collectStableInputs(rootDir);
+  const { inputs } = stable;
   const progress = {
     version: BUILD_VERSION,
     startedAt: new Date().toISOString(),
     updatedAt: null,
-    nonDailyFingerprint: await nonDailyFingerprint(rootDir),
+    nonDailyFingerprint: stable.nonDailyFingerprint,
     inputs,
     completed: emptyCompleted(),
     summary: initialSummary(inputs),
@@ -333,7 +345,42 @@ async function runItems({ name, items, completed, apply, progress, progressPath,
   }
 }
 
-async function runOnce({ stageRoot, progress, progressPath, hooks }) {
+async function replaceDirectory(source, target) {
+  const temporary = `${target}.tmp-${process.pid}`;
+  await rm(temporary, { recursive: true, force: true });
+  await cp(source, temporary, { recursive: true });
+  await rm(target, { recursive: true, force: true });
+  await rename(temporary, target);
+}
+
+async function refreshDailyBase(stageDerived, dailyBase) {
+  await replaceDirectory(stageDerived, dailyBase);
+}
+
+async function restoreDailyBase(dailyBase, stageDerived) {
+  await replaceDirectory(dailyBase, stageDerived);
+}
+
+async function resetNonDailyProgress(rootDir, progress, progressPath) {
+  const stable = await collectStableInputs(rootDir);
+  const currentInputs = stable.inputs;
+  progress.inputs = {
+    ...currentInputs,
+    daily: progress.inputs.daily,
+  };
+  progress.completed = {
+    ...emptyCompleted(),
+    daily: progress.completed.daily,
+    sector: true,
+    dailyBase: true,
+  };
+  progress.summary = initialSummary(progress.inputs);
+  progress.nonDailyFingerprint = stable.nonDailyFingerprint;
+  progress.ready = false;
+  await saveProgress(progressPath, progress);
+}
+
+async function runOnce({ stageRoot, dailyBase, progress, progressPath, hooks }) {
   const { inputs, completed, summary } = progress;
   await runItems({
     name: 'daily',
@@ -351,6 +398,11 @@ async function runOnce({ stageRoot, progress, progressPath, hooks }) {
     });
     completed.sector = true;
     await checkpoint(progressPath, progress, hooks, { phase: 'sector', item: null });
+  }
+  if (!completed.dailyBase) {
+    await refreshDailyBase(join(stageRoot, 'data', 'derived'), dailyBase);
+    completed.dailyBase = true;
+    await checkpoint(progressPath, progress, hooks, { phase: 'daily-base', item: null });
   }
   const itemStages = [
     ['tpexIndex', applyTpexIndexMonth],
@@ -497,6 +549,7 @@ export async function buildDerived({
     let progress = await readProgress(progressPath);
     const stageRootPath = join(buildDir, 'root');
     const stageDerived = join(stageRootPath, 'data', 'derived');
+    const dailyBase = join(buildDir, 'daily-base');
     if (progress !== null && !await exists(stageDerived)) {
       const active = join(dataDir, 'derived');
       if (progress.ready && await exists(active)) {
@@ -515,12 +568,13 @@ export async function buildDerived({
     }
     const stageRoot = await prepareBuild(rootDir, buildDir);
     if (progress === null) progress = await createProgress(rootDir, progressPath);
-    await runOnce({ stageRoot, progress, progressPath, hooks });
+    await runOnce({ stageRoot, dailyBase, progress, progressPath, hooks });
 
     const currentFingerprint = await nonDailyFingerprint(rootDir);
     if (currentFingerprint !== progress.nonDailyFingerprint) {
       await hooks?.onRestart?.({ reason: 'non-daily-raw-changed' });
-      await rm(buildDir, { recursive: true, force: true });
+      await restoreDailyBase(dailyBase, stageDerived);
+      await resetNonDailyProgress(rootDir, progress, progressPath);
       continue;
     }
 
@@ -532,20 +586,26 @@ export async function buildDerived({
     if (older.length > 0) throw new OlderDailyRawError(older);
     const newer = unseen.filter((date) => latestApplied === null || date > latestApplied);
     if (newer.length > 0) {
+      await restoreDailyBase(dailyBase, stageDerived);
       for (const date of newer) {
         await applyDailyDate(stageRoot, date, { applySectorIndex: false });
-        progress.completed.daily.push(date);
-        progress.inputs.daily.push(date);
-        await checkpoint(progressPath, progress, hooks, { phase: 'catchup-daily', item: date });
       }
       await buildSectorIndexForDates(stageRoot, newer, { onWrite: hooks?.onSectorWrite });
-      progress.summary.dailyDates = progress.inputs.daily.length;
-      await checkpoint(progressPath, progress, hooks, { phase: 'catchup-sector', item: null });
+      await refreshDailyBase(stageDerived, dailyBase);
+      progress.completed.daily.push(...newer);
+      progress.inputs.daily.push(...newer);
+      await resetNonDailyProgress(rootDir, progress, progressPath);
+      for (const date of newer) {
+        await hooks?.afterCheckpoint?.({ phase: 'catchup-daily', item: date });
+      }
+      await hooks?.afterCheckpoint?.({ phase: 'catchup-sector', item: null });
+      continue;
     }
 
     if (await nonDailyFingerprint(rootDir) !== progress.nonDailyFingerprint) {
       await hooks?.onRestart?.({ reason: 'non-daily-raw-changed' });
-      await rm(buildDir, { recursive: true, force: true });
+      await restoreDailyBase(dailyBase, stageDerived);
+      await resetNonDailyProgress(rootDir, progress, progressPath);
       continue;
     }
 
@@ -555,7 +615,8 @@ export async function buildDerived({
     await hooks?.beforeSwitch?.();
     if (await nonDailyFingerprint(rootDir) !== progress.nonDailyFingerprint) {
       await hooks?.onRestart?.({ reason: 'non-daily-raw-changed' });
-      await rm(buildDir, { recursive: true, force: true });
+      await restoreDailyBase(dailyBase, stageDerived);
+      await resetNonDailyProgress(rootDir, progress, progressPath);
       continue;
     }
     const finalDaily = await collectDailyDates(rootDir);

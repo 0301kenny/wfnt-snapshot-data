@@ -30,6 +30,28 @@ async function writeDaily(root, date, value) {
   await writeJson(root, 'twse/mi_index', date, sectorRows(date, value));
 }
 
+async function writeValuation(root, date, name, value = 10) {
+  await writeJson(root, 'twse/bwibbu_all', date, [{
+    Date: `${Number(date.slice(0, 4)) - 1911}${date.slice(5, 7)}${date.slice(8, 10)}`,
+    Code: '2330',
+    Name: name,
+    PEratio: String(value),
+    PBratio: '5',
+    DividendYield: '2',
+  }]);
+}
+
+async function writeMonthlyRevenue(root, name = 'monthly name') {
+  await writeJson(root, 'twse/monthly_revenue', '2026-01', [{
+    '資料年月': '11501',
+    '公司代號': '2330',
+    '公司名稱': name,
+    '營業收入-當月營收': '100',
+    '營業收入-去年同月增減(%)': '2',
+    '營業收入-上月比較增減(%)': '1',
+  }]);
+}
+
 async function seedActive(root, text = 'old-active') {
   await mkdir(join(root, 'data', 'derived'), { recursive: true });
   await writeFile(join(root, 'data', 'derived', 'sentinel.txt'), text);
@@ -259,6 +281,91 @@ test('monthly raw added during build restarts staging and equals a from-zero reb
   } finally {
     await rm(changed.root, { recursive: true, force: true });
     await rm(clean.root, { recursive: true, force: true });
+  }
+});
+
+test('non-daily raw change after partial daily progress reruns only non-daily work', async () => {
+  const changed = await makeDailyFixture(4);
+  const clean = await makeDailyFixture(4);
+  try {
+    await writeMonthlyRevenue(clean.root);
+    await buildDerived({ rootDir: clean.root });
+    await assert.rejects(buildDerived({
+      rootDir: changed.root,
+      hooks: {
+        async afterCheckpoint({ phase, item }) {
+          if (phase === 'daily' && item === changed.dates[1]) {
+            await writeMonthlyRevenue(changed.root);
+            throw new Error('non-daily-change-stop');
+          }
+        },
+      },
+    }), /non-daily-change-stop/);
+
+    const resumedDaily = [];
+    let nonDailyRestarts = 0;
+    await buildDerived({
+      rootDir: changed.root,
+      hooks: {
+        afterCheckpoint({ phase, item }) {
+          if (phase === 'daily') resumedDaily.push(item);
+        },
+        onRestart({ reason }) {
+          if (reason === 'non-daily-raw-changed') nonDailyRestarts += 1;
+        },
+      },
+    });
+    assert.deepEqual(resumedDaily, changed.dates.slice(2));
+    assert.equal(nonDailyRestarts, 1);
+    assert.deepEqual(
+      await treeBytes(join(changed.root, 'data', 'derived')),
+      await treeBytes(join(clean.root, 'data', 'derived')),
+    );
+  } finally {
+    await rm(changed.root, { recursive: true, force: true });
+    await rm(clean.root, { recursive: true, force: true });
+  }
+});
+
+test('newer daily valuation catch-up reruns monthly work and matches from-zero bytes', async () => {
+  const changed = await tempRoot();
+  const clean = await tempRoot();
+  const initialDate = '2026-01-02';
+  const newerDate = '2026-01-05';
+  try {
+    for (const root of [changed, clean]) {
+      await writeDaily(root, initialDate, 2);
+      await writeValuation(root, initialDate, 'initial valuation', 10);
+      await writeMonthlyRevenue(root, 'monthly final');
+    }
+    await writeDaily(clean, newerDate, 5);
+    await writeValuation(clean, newerDate, 'new valuation', 20);
+    await buildDerived({ rootDir: clean });
+
+    let added = false;
+    await buildDerived({
+      rootDir: changed,
+      hooks: {
+        async afterCheckpoint({ phase, item }) {
+          if (!added && phase === 'daily' && item === initialDate) {
+            added = true;
+            await writeDaily(changed, newerDate, 5);
+            await writeValuation(changed, newerDate, 'new valuation', 20);
+          }
+        },
+      },
+    });
+    assert.deepEqual(
+      await treeBytes(join(changed, 'data', 'derived')),
+      await treeBytes(join(clean, 'data', 'derived')),
+    );
+    const fundamental = JSON.parse(
+      await readFile(join(changed, 'data', 'derived', 'fundamentals', '23', '2330.json')),
+    );
+    assert.equal(fundamental.name, 'monthly final');
+  } finally {
+    await rm(changed, { recursive: true, force: true });
+    await rm(clean, { recursive: true, force: true });
   }
 });
 

@@ -19,12 +19,13 @@ initial path check; no script was run against it, and it was not staged.
   - Resumes from the completed unit list. If a process stops inside a unit, its
     checkpoint is absent and the idempotent unit is applied again.
   - Fingerprints every non-daily input byte with SHA-256. A change before switch
-    discards only `data/.derived-build/` and rebuilds staging from the current raw,
-    which makes the result equal to a from-zero rebuild at catch-up time.
-  - Re-scans daily source dates before switching. Newer dates are appended; a newly
-    discovered unapplied date at or before the latest applied date throws
-    `OlderDailyRawError` and lists the dates without modifying active or staged
-    derived bytes.
+    restores the daily-only checkpoint at `data/.derived-build/daily-base/`, keeps
+    completed daily dates, and reruns only non-daily stages from current raw.
+  - Re-scans daily source dates before switching. Newer dates are applied to the
+    restored daily-only checkpoint, that checkpoint is refreshed, and all
+    non-daily stages rerun in the original from-zero order. A newly discovered
+    unapplied date at or before the latest applied date throws `OlderDailyRawError`
+    and lists the dates without modifying active or staged derived bytes.
   - CLI protection throws `SwitchWindowError` at Taipei 21:00-22:00 every day and
     Sunday 10:00-11:00. Programmatic `buildDerived({ rootDir })` calls do not enable
     the clock guard, so existing tests are time-independent.
@@ -42,8 +43,8 @@ initial path check; no script was run against it, and it was not staged.
     `sector_index.json` once. It shares the parser, ordering, upsert, and serializer
     with incremental `applySectorIndexDate`.
 - `tests/build-derived-staged.test.mjs`
-  - Adds 11 temporary-root tests covering all Contract acceptance cases plus a
-    post-rename interruption recovery case and explicit `--reset` behavior.
+  - Adds 13 temporary-root tests covering all Contract acceptance cases, correction
+    round 1, post-rename interruption recovery, and explicit `--reset` behavior.
 - `tests/all.mjs`, `README.md`, and `AGENTS.md`
   - Import the new test module and document the operator workflow and repository
     invariant.
@@ -54,7 +55,7 @@ initial path check; no script was run against it, and it was not staged.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "startedAt": "ISO timestamp",
   "updatedAt": "ISO timestamp",
   "nonDailyFingerprint": "sha256 hex",
@@ -72,6 +73,7 @@ initial path check; no script was run against it, and it was not staged.
   "completed": {
     "daily": ["YYYY-MM-DD"],
     "sector": true,
+    "dailyBase": true,
     "tpexIndex": [],
     "pcr": [],
     "foreignFutures": [],
@@ -115,15 +117,15 @@ Final command in the worktree:
 
 ```text
 $ node --test tests/
-1..323
-# tests 326
+1..325
+# tests 328
 # suites 0
-# pass 326
+# pass 328
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 13675.265766
+# duration_ms 12603.16363
 ```
 
 No pre-existing test file was changed; only the Contract-authorized import was
@@ -210,6 +212,76 @@ Injected Taipei 21:30 clock through the exported CLI runner (exit 1):
 $ node --input-type=module --eval 'import { runBuildDerivedCli } from "./scripts/build-derived.mjs"; try { await runBuildDerivedCli(["--out", "/tmp/wfnt-t306-cli-blocked.nSjY73"], { now: () => new Date("2026-10-19T13:30:00Z") }); } catch (error) { console.log(error.message); process.exitCode = 1; }'
 derived switch refused: Taipei daily protection window 21:00-22:00
 ```
+
+## 修正輪 1
+
+### O-001
+
+- 新增 daily-only checkpoint：`data/.derived-build/daily-base/`。逐日與 sector
+  完成後先保存此樹，之後才進入月／單例／季／週／macro 階段。
+- 非逐日 raw 指紋變動時，工作樹只以 daily-only checkpoint 還原 staged
+  derived，保留 `completed.daily`，重置並重跑非逐日 inputs、completed flags
+  與 summary；不再刪除整個 `data/.derived-build/`。
+- 重收非逐日 inputs 時以變動前後兩次 SHA-256 相等為穩定條件，避免 inputs
+  清單與其基準指紋來自不同 raw 時點。
+- 進度格式升為 version 2，新增 `completed.dailyBase`；version 1 進度須由操作員
+  使用既有 `--reset` 明確放棄，避免把已含非逐日輸出的 staged tree 誤認為
+  daily-only checkpoint。
+- 新測試 `non-daily raw change after partial daily progress reruns only non-daily work`
+  在第 2/4 個逐日 checkpoint 後新增月營收並中斷。續跑只觀察到第 3、4 日，
+  且切換結果與同 raw 從零重建逐位元組相同。
+
+消融：三處處理暫時還原為 `rm(buildDir) + continue`，新增測試轉紅：
+
+```text
+not ok 1 - non-daily raw change after partial daily progress reruns only non-daily work
+expected: ['2026-01-03', '2026-01-04']
+actual:   ['2026-01-03', '2026-01-04',
+           '2026-01-01', '2026-01-02', '2026-01-03', '2026-01-04']
+# pass 0
+# fail 1
+```
+
+還原後同測試：`pass 1`, `fail 0`。
+
+### O-002
+
+- 較新逐日日期不再直接套在已完成的非逐日輸出上。流程改為：還原
+  daily-only checkpoint → 套用所有 newer dates → 更新 sector → 原子刷新
+  daily-only checkpoint → 重置並依既有順序重跑全部非逐日階段。
+- 新測試 `newer daily valuation catch-up reruns monthly work and matches from-zero bytes`
+  使用同一 TWSE 代號的 valuation 與月營收 metadata。修正後結果名稱為
+  `monthly final`，整棵 derived 與同 raw 從零重建逐位元組相同。
+
+消融：暫時還原為在非逐日階段後直接套 newer dates，測試轉紅；唯一差異檔為
+`fundamentals/23/2330.json`，實際 metadata 名稱 `new valuation`，預期為
+`monthly final`：
+
+```text
+not ok 1 - newer daily valuation catch-up reruns monthly work and matches from-zero bytes
+error: Expected values to be strictly deep-equal
+# pass 0
+# fail 1
+```
+
+還原後同測試：`pass 1`, `fail 0`。
+
+修正輪最終完整測試摘要：
+
+```text
+$ node --test tests/
+1..325
+# tests 328
+# suites 0
+# pass 328
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 12603.16363
+```
+
+依交付指示，本修正輪未建立 commit，變更保留於工作樹供 Orchestrator 代 commit。
 
 ## Scope and safety checks
 
