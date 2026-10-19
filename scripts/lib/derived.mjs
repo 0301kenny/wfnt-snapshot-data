@@ -14,7 +14,7 @@ export const DEFAULT_VALUATION_WINDOW = 1300;
 export const DEFAULT_REVENUE_WINDOW = 36;
 export const DEFAULT_QUARTERLY_WINDOW = 24;
 export const DEFAULT_INSIDER_WINDOW = 60;
-export const MACRO_START_DATE = 20210101;
+export const MACRO_START_DATE = 20061016;
 export const DERIVED_INPUT_DATASETS = new Set([
   'twse/mi_index',
   'twse/stock_day_all',

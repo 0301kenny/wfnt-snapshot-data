@@ -28,7 +28,7 @@ function fredFixture(seriesId, { lastDate = '2021-01-07', extraColumn = true } =
   const row = (date, value) => extraColumn ? `${date},999,${value}` : `${date},${value}`;
   return [
     header,
-    row('2020-12-31', '1'),
+    row('2006-10-13', '1'),
     row('2021-01-04', '2'),
     row('2021-01-05', ''),
     row('2021-01-06', '.'),
@@ -92,6 +92,31 @@ test('FRED parser skips empty and dot values and resolves the series column by h
   t.diagnostic(`A2_A3_ROWS=${JSON.stringify(rows)} EMPTY_PRESENT=${rows.some((row) => row[0] === 20251225)} DOT_PRESENT=${rows.some((row) => row[0] === 20251229)}`);
 });
 
+test('macro derivation includes exactly the 2006-10-16 date floor', async () => {
+  await withTempDir(async (root) => {
+    for (const endpoint of SERIES_ENDPOINTS) {
+      const body = [
+        `observation_date,${endpoint.seriesId}`,
+        '2006-10-13,13',
+        '2006-10-15,15',
+        '2006-10-16,16',
+        '2006-10-17,17',
+        '',
+      ].join('\n');
+      await writeFredRaw(root, endpoint.seriesId, body);
+    }
+
+    await applyMacroSeries(root);
+    const macro = await readJson(join(root, 'data', 'derived', 'macro.json'));
+    for (const endpoint of SERIES_ENDPOINTS) {
+      assert.deepEqual(macro.series[endpoint.seriesId].rows, [
+        [20061016, 16],
+        [20061017, 17],
+      ]);
+    }
+  });
+});
+
 test('macro derivation enforces the date floor, attribution, adaptive counts, and idempotence', async (t) => {
   await withTempDir(async (root) => {
     const fixtures = new Map();
@@ -112,7 +137,7 @@ test('macro derivation enforces the date floor, attribution, adaptive counts, an
       const expected = expectedFixtureCount(fixtures.get(endpoint.seriesId), endpoint.seriesId);
       assert.deepEqual(series.cols, ['d', 'v']);
       assert.equal(series.rows.length, expected);
-      assert.equal(series.rows.some((row) => row[0] === 20201231), false);
+      assert.equal(series.rows.some((row) => row[0] === 20061013), false);
       assert.equal(series.rows.some((row) => row[0] === 20210104), true);
       counts[endpoint.seriesId] = { rawEligible: expected, derived: series.rows.length };
     }
