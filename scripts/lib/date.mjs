@@ -21,7 +21,7 @@ export function parseRocDate(value) {
   const text = String(value).trim();
   let match = text.match(/^(\d{3})(\d{2})(\d{2})$/);
   if (!match) {
-    match = text.match(/^(\d{3})\/(\d{1,2})\/(\d{1,2})$/);
+    match = text.match(/^(\d{2,3})\/(\d{1,2})\/(\d{1,2})$/);
   }
   if (!match) return null;
   const year = Number(match[1]) + 1911;
