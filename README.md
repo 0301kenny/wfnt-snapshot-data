@@ -4,8 +4,9 @@ TW Stock Radar 的每日官方開放資料快照服務。
 
 ## Full derived rebuild
 
-全量重建使用旁建目錄 `data/.derived-build/root/data/derived/`，進度保存在
-`data/.derived-build/progress.json`。中斷後以相同命令續跑；完成補齊後才切換成
+全量重建使用旁建目錄 `data/.derived-build/root/data/derived/`，非逐日進度保存在
+`data/.derived-build/progress.json`，逐日進度保存在 append-only
+`data/.derived-build/daily-progress.jsonl`。中斷後以相同命令續跑；完成補齊後才切換成
 `data/derived/`，舊版保留為 `data/derived.prev-<台北 YYYYMMDDHHmm>`（同分鐘重複
 切換會加流水號），程式不會自動刪除舊版。
 
@@ -25,6 +26,9 @@ node scripts/build-derived.mjs --out /tmp/wfnt-derived-rebuild
 
 CLI 在台北時間每日 21:00–22:00 與週日 10:00–11:00 只拒絕最後切換；已完成的
 旁建與進度會保留，允許時段再執行相同命令即可補齊並切換。
+
+最後切換包含兩次目錄改名；若程序恰在兩次改名之間終止，`data/derived/` 會暫時
+不存在。重跑同一指令即會完成切換；舊版仍保留在 `data/derived.prev-*`。
 
 - 資料來源:TWSE OpenAPI、TPEX OpenAPI、TDCC 開放資料,以及僅供歷史回補的 TWSE/TPEX legacy 與 MOPS 端點——全部為官方公開的**盤後**資料,本 repo 只做留存,不即時、不推播。
 - `scripts/probe.mjs` + `probe` workflow 只做連通性煙霧驗證。

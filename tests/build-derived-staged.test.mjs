@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildDerived,
+  ChangedDailyRawError,
   OlderDailyRawError,
   SwitchWindowError,
 } from '../scripts/build-derived.mjs';
@@ -366,6 +367,187 @@ test('newer daily valuation catch-up reruns monthly work and matches from-zero b
   } finally {
     await rm(changed, { recursive: true, force: true });
     await rm(clean, { recursive: true, force: true });
+  }
+});
+
+test('adding sbl raw for an applied date refuses switching and preserves active and staged bytes', async () => {
+  const fixture = await makeDailyFixture(2);
+  try {
+    await seedActive(fixture.root);
+    const activeBefore = await treeBytes(join(fixture.root, 'data', 'derived'));
+    let stagedAtChange;
+    await assert.rejects(buildDerived({
+      rootDir: fixture.root,
+      hooks: {
+        async afterCheckpoint({ phase, item }) {
+          if (phase === 'daily' && item === fixture.dates[1]) {
+            await writeJson(fixture.root, 'twse/sbl_hist', item, []);
+            stagedAtChange = await treeBytes(
+              join(fixture.root, 'data', '.derived-build', 'root', 'data', 'derived'),
+            );
+          }
+        },
+      },
+    }), (error) => error instanceof ChangedDailyRawError
+      && error.dates.length === 1
+      && error.dates[0] === fixture.dates[1]);
+    assert.deepEqual(await treeBytes(join(fixture.root, 'data', 'derived')), activeBefore);
+    assert.deepEqual(
+      await treeBytes(join(fixture.root, 'data', '.derived-build', 'root', 'data', 'derived')),
+      stagedAtChange,
+    );
+    await assert.rejects(
+      buildDerived({ rootDir: fixture.root }),
+      (error) => error instanceof ChangedDailyRawError && error.message.includes(fixture.dates[1]),
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('modifying raw for an applied date refuses switching and preserves active and staged bytes', async () => {
+  const fixture = await makeDailyFixture(2);
+  try {
+    await seedActive(fixture.root);
+    const activeBefore = await treeBytes(join(fixture.root, 'data', 'derived'));
+    let stagedAtChange;
+    await assert.rejects(buildDerived({
+      rootDir: fixture.root,
+      hooks: {
+        async afterCheckpoint({ phase, item }) {
+          if (phase === 'daily' && item === fixture.dates[1]) {
+            await writeDaily(fixture.root, item, 999);
+            stagedAtChange = await treeBytes(
+              join(fixture.root, 'data', '.derived-build', 'root', 'data', 'derived'),
+            );
+          }
+        },
+      },
+    }), (error) => error instanceof ChangedDailyRawError
+      && error.dates.length === 1
+      && error.dates[0] === fixture.dates[1]);
+    assert.deepEqual(await treeBytes(join(fixture.root, 'data', 'derived')), activeBefore);
+    assert.deepEqual(
+      await treeBytes(join(fixture.root, 'data', '.derived-build', 'root', 'data', 'derived')),
+      stagedAtChange,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('snapshot replacement interruption recovers without redoing applied daily dates', async () => {
+  const interrupted = await makeDailyFixture(2);
+  const uninterrupted = await makeDailyFixture(2);
+  const newer = '2026-01-05';
+  try {
+    await writeDaily(uninterrupted.root, newer, 5);
+    await buildDerived({ rootDir: uninterrupted.root });
+    await seedActive(interrupted.root);
+    let added = false;
+    let stopped = false;
+    const dailyBase = join(interrupted.root, 'data', '.derived-build', 'daily-base');
+    await assert.rejects(buildDerived({
+      rootDir: interrupted.root,
+      hooks: {
+        async afterCheckpoint({ phase, item }) {
+          if (!added && phase === 'daily' && item === interrupted.dates[1]) {
+            added = true;
+            await writeDaily(interrupted.root, newer, 5);
+          }
+        },
+        afterSnapshotTargetMoved({ target }) {
+          if (!stopped && target === dailyBase) {
+            stopped = true;
+            throw new Error('snapshot-replace-stop');
+          }
+        },
+      },
+    }), /snapshot-replace-stop/);
+    assert.deepEqual(await treeBytes(join(interrupted.root, 'data', 'derived')), {
+      'sentinel.txt': Buffer.from('old-active').toString('base64'),
+    });
+
+    const resumedDaily = [];
+    await buildDerived({
+      rootDir: interrupted.root,
+      hooks: {
+        afterCheckpoint({ phase, item }) {
+          if (phase === 'daily') resumedDaily.push(item);
+        },
+      },
+    });
+    assert.deepEqual(resumedDaily, []);
+    assert.deepEqual(
+      await treeBytes(join(interrupted.root, 'data', 'derived')),
+      await treeBytes(join(uninterrupted.root, 'data', 'derived')),
+    );
+  } finally {
+    await rm(interrupted.root, { recursive: true, force: true });
+    await rm(uninterrupted.root, { recursive: true, force: true });
+  }
+});
+
+test('completed daily raw full-check count is constant for 10 and 40 days', async () => {
+  const counts = [];
+  for (const count of [10, 40]) {
+    const fixture = await makeDailyFixture(count);
+    try {
+      let fullChecks = 0;
+      await buildDerived({
+        rootDir: fixture.root,
+        hooks: { onDailyRawFullCheck: () => { fullChecks += 1; } },
+      });
+      counts.push(fullChecks);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+  assert.deepEqual(counts, [3, 3]);
+});
+
+test('daily progress append size stays bounded for 10 and 40 days', async () => {
+  const maximumBytes = [];
+  for (const count of [10, 40]) {
+    const fixture = await makeDailyFixture(count);
+    try {
+      const writes = [];
+      await buildDerived({
+        rootDir: fixture.root,
+        hooks: { onDailyProgressWrite: ({ bytes }) => writes.push(bytes) },
+      });
+      assert.equal(writes.length, count);
+      maximumBytes.push(Math.max(...writes));
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  }
+  assert.ok(maximumBytes[1] <= maximumBytes[0] * 2, `${maximumBytes[1]} > ${maximumBytes[0]} * 2`);
+});
+
+test('daily raw modified mid-phase is rejected before switching', async () => {
+  const fixture = await makeDailyFixture(4);
+  try {
+    await seedActive(fixture.root);
+    const activeBefore = await treeBytes(join(fixture.root, 'data', 'derived'));
+    let beforeSwitchCalls = 0;
+    await assert.rejects(buildDerived({
+      rootDir: fixture.root,
+      hooks: {
+        async afterCheckpoint({ phase, item }) {
+          if (phase === 'daily' && item === fixture.dates[1]) {
+            await writeDaily(fixture.root, fixture.dates[0], 999);
+          }
+        },
+        beforeSwitch() { beforeSwitchCalls += 1; },
+      },
+    }), (error) => error instanceof ChangedDailyRawError
+      && error.dates.length === 1
+      && error.dates[0] === fixture.dates[0]);
+    assert.equal(beforeSwitchCalls, 0);
+    assert.deepEqual(await treeBytes(join(fixture.root, 'data', 'derived')), activeBefore);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
   }
 });
 

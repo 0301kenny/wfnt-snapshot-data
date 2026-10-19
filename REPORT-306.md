@@ -14,10 +14,16 @@ initial path check; no script was run against it, and it was not staged.
   - Creates `data/.derived-build/root/data/raw` as a read-only-use symlink to the
     selected root's `data/raw`; every existing `apply*` function therefore keeps
     using its `rootDir` contract without a second transformation path.
-  - Atomically checkpoints `data/.derived-build/progress.json` after each daily,
-    monthly, quarterly, weekly, or singleton stage unit.
+  - Appends each completed daily unit and its raw metadata to
+    `data/.derived-build/daily-progress.jsonl`; non-daily units remain atomically
+    checkpointed in `data/.derived-build/progress.json`.
   - Resumes from the completed unit list. If a process stops inside a unit, its
     checkpoint is absent and the idempotent unit is applied again.
+  - Records size, nanosecond mtime/ctime, and inode metadata for all 18 raw files
+    that `applyDailyDate` can read on each completed date. A later addition,
+    modification, or deletion throws `ChangedDailyRawError` with every affected
+    date before sector work or switching; checks use filesystem metadata, never
+    rescan raw file contents, and run only three times in an unchanged build.
   - Fingerprints every non-daily input byte with SHA-256. A change before switch
     restores the daily-only checkpoint at `data/.derived-build/daily-base/`, keeps
     completed daily dates, and reruns only non-daily stages from current raw.
@@ -34,6 +40,10 @@ initial path check; no script was run against it, and it was not staged.
     `data/derived`. It never deletes a `derived.prev-*` tree. A rename failure
     restores the old active tree. A stop after the new tree is renamed but before
     staging cleanup is recognized and finalized on the next run.
+  - Replaces staged snapshots through `.replace-next` and `.replace-previous`
+    siblings. At every interruption point either the target or its complete
+    previous snapshot remains, and the next invocation recovers it before reading
+    progress.
   - CLI options are `--out DIR`, `--build-only`, and `--reset`. `--reset` removes
     only `data/.derived-build/` before starting.
 - `scripts/lib/derived.mjs`
@@ -43,24 +53,27 @@ initial path check; no script was run against it, and it was not staged.
     `sector_index.json` once. It shares the parser, ordering, upsert, and serializer
     with incremental `applySectorIndexDate`.
 - `tests/build-derived-staged.test.mjs`
-  - Adds 13 temporary-root tests covering all Contract acceptance cases, correction
-    round 1, post-rename interruption recovery, and explicit `--reset` behavior.
+  - Adds 19 temporary-root tests covering all Contract acceptance cases, correction
+    rounds 1 through 3, post-rename interruption recovery, and explicit `--reset`
+    behavior.
 - `tests/all.mjs`, `README.md`, and `AGENTS.md`
   - Import the new test module and document the operator workflow and repository
     invariant.
 
 ## Progress file format
 
-`data/.derived-build/progress.json` is pretty-printed JSON with a trailing newline:
+`data/.derived-build/progress.json` is pretty-printed JSON with a trailing newline.
+Daily completion and raw state are intentionally excluded so non-daily checkpoint
+writes do not carry the growing metadata map:
 
 ```json
 {
-  "version": 2,
+  "version": 4,
   "startedAt": "ISO timestamp",
   "updatedAt": "ISO timestamp",
   "nonDailyFingerprint": "sha256 hex",
   "inputs": {
-    "daily": ["YYYY-MM-DD"],
+    "daily": [],
     "tpexIndex": ["YYYY-MM"],
     "pcr": ["YYYY-MM"],
     "foreignFutures": ["YYYY-MM"],
@@ -92,10 +105,19 @@ initial path check; no script was run against it, and it was not staged.
 }
 ```
 
-The arrays contain sorted unit keys that were fully applied. `summary` preserves
-the base return fields (`dailyDates` through `files`); runtime return values add
-`staged`, `switched`, `previousDir`, and, only during post-switch recovery,
-`recovered`.
+`data/.derived-build/daily-progress.jsonl` is append-only during the daily phase;
+each compact line is one independently recoverable daily checkpoint:
+
+```json
+{"date":"YYYY-MM-DD","state":{"twse/mi_index":{"size":"decimal bytes","mtimeNs":"decimal nanoseconds","ctimeNs":"decimal nanoseconds","ino":"decimal inode"},"twse/sbl_hist":null}}
+```
+
+On resume, valid complete lines rebuild the in-memory `completed.daily` list and
+raw-state map; a partial trailing line is discarded so that date is idempotently
+reapplied. The non-daily arrays contain sorted unit keys that were fully applied.
+`summary` preserves the base return fields (`dailyDates` through `files`); runtime
+return values add `staged`, `switched`, `previousDir`, and, only during post-switch
+recovery, `recovered`.
 
 ## Test suite
 
@@ -117,15 +139,15 @@ Final command in the worktree:
 
 ```text
 $ node --test tests/
-1..325
-# tests 328
+1..331
+# tests 334
 # suites 0
-# pass 328
+# pass 334
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 12603.16363
+# duration_ms 14956.503653
 ```
 
 No pre-existing test file was changed; only the Contract-authorized import was
@@ -279,6 +301,150 @@ $ node --test tests/
 # skipped 0
 # todo 0
 # duration_ms 12603.16363
+```
+
+依交付指示，本修正輪未建立 commit，變更保留於工作樹供 Orchestrator 代 commit。
+
+## 修正輪 2
+
+### R-1
+
+- `DAILY_SOURCES` 新增 `twse/sbl_hist` 與 `tpex/sbl_hist`，現與
+  `applyDailyDate` 實際讀取的 18 個 dataset 完全一致。
+- progress 格式升為 version 3，新增 `dailyRawState`。每個已完成日期記錄各逐日
+  raw 的 size、mtimeNs、ctimeNs、inode；不存在的檔案記為 `null`。後續檢查只
+  stat 這些已知路徑，不讀逐日 raw 內容。
+- raw 在套用後新增、修改或刪除時，`ChangedDailyRawError` 以
+  `CHANGED_DAILY_RAW` 非 0 結束並列出所有受影響日期。檢查位於續跑入口、每個
+  checkpoint hook 後、補齊前及切換前，因此拒絕後不再改 staged 或 active tree。
+- 日期補齊仍只接受嚴格晚於最新已套用日期的日期；更舊未套用日期維持既有
+  `OlderDailyRawError` 行為。
+- 新測試分別在逐日階段完成後新增同日 `twse/sbl_hist`、修改同日既有
+  `twse/mi_index`，均驗證非 0 rejection、錯誤日期及 active/staged 位元組不變。
+
+消融 1：暫時從 `DAILY_SOURCES` 拿掉 `twse/sbl_hist`，新增測試轉紅：
+
+```text
+not ok 1 - adding sbl raw for an applied date refuses switching and preserves active and staged bytes
+error: 'Missing expected rejection.'
+# pass 0
+# fail 1
+```
+
+還原後同測試：`pass 1`, `fail 0`。
+
+消融 2：暫時將已套用日期變動檢查改為 no-op，新增測試轉紅：
+
+```text
+not ok 1 - modifying raw for an applied date refuses switching and preserves active and staged bytes
+error: 'Missing expected rejection.'
+# pass 0
+# fail 1
+```
+
+還原後同測試：`pass 1`, `fail 0`。
+
+### O-003
+
+- `replaceDirectory` 先把完整新 snapshot 複製到固定 `.replace-next` sibling，再把
+  舊 target 改名為 `.replace-previous`，最後才把新 snapshot 改名為 target。
+- 重跑時先執行 recovery：危險點中斷若 target 不存在便把完整
+  `.replace-previous` 改回；若新 target 已存在則清掉內部舊備份。過程不會刪除
+  active `derived` 或任何 `derived.prev-*`。
+- 新測試在 `daily-base` 舊 target 已移走、新 target 尚未改名時注入中斷；重跑
+  完成且結果與一次跑完逐位元組相同，`phase=daily` 的重做清單為空。
+
+消融 3：暫時還原為先刪 target 再改名 temporary，新增測試轉紅：
+
+```text
+not ok 1 - snapshot replacement interruption recovers without redoing applied daily dates
+error: "ENOENT: no such file or directory, lstat '.../data/.derived-build/daily-base'"
+# pass 0
+# fail 1
+```
+
+還原後同測試：`pass 1`, `fail 0`。
+
+### R-2（人類接受殘餘風險）
+
+`README.md` 已明載：正式切換的兩次目錄改名之間若程序終止，
+`data/derived/` 會暫時不存在；重跑同一指令即完成切換，舊版位於
+`data/derived.prev-*`。依裁決未修改正式切換程式。
+
+修正輪 2 最終完整測試摘要：
+
+```text
+$ node --test tests/
+1..328
+# tests 331
+# suites 0
+# pass 331
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 15290.790718
+```
+
+依交付指示，本修正輪未建立 commit，變更保留於工作樹供 Orchestrator 代 commit。
+
+## 修正輪 3
+
+### O-004
+
+- 進度格式升為 version 4。逐日完成狀態與 18 個 raw 路徑的 stat metadata 改存於
+  append-only `data/.derived-build/daily-progress.jsonl`，每完成一天只追加一行 compact
+  JSON；`progress.json` 不再包含成長中的 `dailyRawState` 或 `completed.daily`。
+- 續跑會讀取 journal 的完整有效行，重建記憶體內的已完成日期與 raw 狀態；若最後
+  一行因中斷而不完整便截去該行，該日期由既有 idempotent daily apply 重做。
+- 若 catch-up journal 已寫入但主 progress 尚未更新就中斷，續跑會由 journal 補回
+  新日期、還原 `daily-base`，再重置非逐日階段，維持從零套用順序。
+- 完整已套用日期檢查從每個 checkpoint 移除。無 raw 變動的一次建置固定執行三次：
+  續跑入口、逐日階段結束、切換前；最後一次位於 `switchDerived` 前。補齊完成另做
+  一次固定邊界檢查，不隨逐日天數增加。
+- 新增 10/40 天測試：兩組完整檢查皆為 3 次；逐日 progress append 的最大單筆
+  bytes 在 40 天組不超過 10 天組的 2 倍。另在第 2 天 checkpoint 修改第 1 天 raw，
+  驗證在 sector 與切換前以 `ChangedDailyRawError` 拒絕且 active tree 不變。
+- 修正輪 2 的新增／修改 raw 拒絕測試與 snapshot replacement recovery 測試均維持
+  全綠。
+
+消融 1：暫時把完整檢查放回每個逐日 checkpoint，10/40 天測試轉紅：
+
+```text
+not ok 1 - completed daily raw full-check count is constant for 10 and 40 days
+expected: [13, 13]
+actual:   [13, 43]
+# pass 0
+# fail 1
+```
+
+還原後同測試：`pass 1`, `fail 0`，實際計數為 `[3, 3]`。
+
+消融 2：暫時改回每完成一天就以縮排 JSON 整份寫入含累積
+`dailyRawState`／`completed.daily` 的進度，10/40 天測試轉紅：
+
+```text
+not ok 1 - daily progress append size stays bounded for 10 and 40 days
+error: '31481 > 8711 * 2'
+# pass 0
+# fail 1
+```
+
+還原後同測試：`pass 1`, `fail 0`。
+
+修正輪 3 最終完整測試摘要：
+
+```text
+$ node --test tests/
+1..331
+# tests 334
+# suites 0
+# pass 334
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 14956.503653
 ```
 
 依交付指示，本修正輪未建立 commit，變更保留於工作樹供 Orchestrator 代 commit。
