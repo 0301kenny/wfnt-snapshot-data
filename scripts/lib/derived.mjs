@@ -120,6 +120,33 @@ const T86_FIELDS = {
   dealer: '自營商買賣超股數',
   total: '三大法人買賣超股數',
 };
+const T86_LEGACY_FIELDS = [
+  [
+    '證券代號', '證券名稱', '外資買進股數', '外資賣出股數', '外資買賣超股數',
+    '投信買進股數', '投信賣出股數', '投信買賣超股數', '自營商買賣超股數',
+    '自營商買進股數', '自營商賣出股數', '三大法人買賣超股數',
+  ],
+  [
+    '證券代號', '證券名稱', '外資買進股數', '外資賣出股數', '外資買賣超股數',
+    '投信買進股數', '投信賣出股數', '投信買賣超股數', '自營商買賣超股數',
+    '自營商買進股數(自行買賣)', '自營商賣出股數(自行買賣)', '自營商買賣超股數(自行買賣)',
+    '自營商買進股數(避險)', '自營商賣出股數(避險)', '自營商買賣超股數(避險)',
+    '三大法人買賣超股數',
+  ],
+];
+const TPEX_INSTI_LEGACY_FIELDS = [
+  '代號', '名稱', '外資及陸資買股數', '外資及陸資賣股數', '外資及陸資淨買股數',
+  '投信買進股數', '投信賣股數', '投信淨買股數', '自營淨買股數',
+  '自營商(自行買賣)買股數', '自營商(自行買賣)賣股數', '自營商(自行買賣)淨買股數',
+  '自營商(避險)買股數', '自營商(避險)賣股數', '自營商(避險)淨買股數',
+  '三大法人買賣超股數',
+];
+
+function fieldsEqual(actual, expected) {
+  return Array.isArray(actual)
+    && actual.length === expected.length
+    && actual.every((field, index) => field === expected[index]);
+}
 const MARKET_TEMPLATE = {
   updated: null,
   twse: {
@@ -678,6 +705,22 @@ export function parseTwseSblDerived(payload) {
 export function parseTwseT86Hist(payload) {
   if (payload?.stat !== 'OK') throw new Error('T86: stat is not OK');
   if (!Array.isArray(payload.data)) throw new Error('T86: data is not an array');
+  const legacyFields = T86_LEGACY_FIELDS.find((fields) => fieldsEqual(payload.fields, fields));
+  if (legacyFields) {
+    return payload.data.map((row, index) => {
+      if (!Array.isArray(row) || row.length !== legacyFields.length) {
+        throw new Error(`T86: data[${index}] width must be ${legacyFields.length}`);
+      }
+      return {
+        id: String(row[0] ?? '').trim(),
+        name: String(row[1] ?? '').trim(),
+        fi: compactNumber(row[legacyFields.length - 1]),
+        ff: compactNumber(row[4]),
+        ft: compactNumber(row[7]),
+        fd: compactNumber(row[8]),
+      };
+    });
+  }
   const indexes = requiredFieldIndexes(payload.fields, T86_FIELDS, 'T86');
   return payload.data.map((row) => {
     const foreign = compactNumber(row?.[indexes.foreign]);
@@ -750,6 +793,24 @@ export function parseTpexDailyQuotesHist(payload) {
 }
 
 export function parseTpexInstiHist(payload) {
+  if (payload?.stat !== 'ok') throw new Error('TPEX_INSTI: stat is not ok');
+  const legacyTable = payload?.tables?.[1];
+  if (legacyTable && fieldsEqual(legacyTable.fields, TPEX_INSTI_LEGACY_FIELDS)) {
+    if (!Array.isArray(legacyTable.data)) throw new Error('TPEX_INSTI: tables[1] is invalid');
+    return legacyTable.data.map((row, index) => {
+      if (!Array.isArray(row) || row.length !== TPEX_INSTI_LEGACY_FIELDS.length) {
+        throw new Error(`TPEX_INSTI: data[${index}] width must be ${TPEX_INSTI_LEGACY_FIELDS.length}`);
+      }
+      return {
+        SecuritiesCompanyCode: String(row[0] ?? '').trim(),
+        CompanyName: String(row[1] ?? '').trim(),
+        TotalDifference: compactNumber(row[15]),
+        [TPEX_INSTI_FIELDS.ff]: compactNumber(row[4]),
+        [TPEX_INSTI_FIELDS.ft]: compactNumber(row[7]),
+        [TPEX_INSTI_FIELDS.fd]: compactNumber(row[8]),
+      };
+    });
+  }
   const table = requiredTpexLegacyTable(payload, 'TPEX_INSTI');
   if (!Array.isArray(table.fields) || table.fields.length !== 24) {
     throw new Error('TPEX_INSTI: fields length must be 24');

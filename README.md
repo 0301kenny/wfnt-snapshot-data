@@ -226,6 +226,16 @@ node scripts/history-backfill.mjs \
 
 若連續五個日期的 anchor 異常，進度會進入 `BLOCKED`，後續執行不會發出請求。確認上游版型與 parser 相容後，才以相同範圍加 `--resume-blocked` 恢復。
 
+舊版官方 T86、TWT93U 與 TPEX 三大法人回應通過現行 parser 驗證後，可將隔離檔原始 bytes 複製到同 dataset 的 `data/raw/`：
+
+```bash
+node scripts/promote-quarantine.mjs --dry-run
+node scripts/promote-quarantine.mjs
+node scripts/promote-quarantine.mjs --dataset twse/t86_hist --dataset tpex/insti_hist --out /tmp/wfnt-history
+```
+
+未指定 `--dataset` 時處理 `twse/t86_hist`、`twse/sbl_hist` 與 `tpex/insti_hist`。每個檔案都必須有資料列、通過與 history runner 相同的 parser 與日期檢查；寫入後會重讀比對 SHA-256。已有 raw 若 bytes 相同則略過，不同則報衝突且絕不覆寫。隔離檔永不刪除或修改，腳本不寫 derived 或 progress、不連網，並與 runner 共用 `data/history-backfill/.lock`。`--dry-run` 的 `copied` 表示「將複製」數，不會建立 raw。
+
 repo 內的 `ops/launchd/com.wfnt.history-backfill.plist` 是每 30 分鐘喚醒一次、並由 `caffeinate -i` 包住 runner 的範本。安裝與移除方式如下；請先檢查範本中的 repo、Node 與 log 絕對路徑是否符合本機。安裝不是資料 pipeline 的一部分，不應在測試時執行。
 
 ```bash

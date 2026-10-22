@@ -107,6 +107,26 @@ export function parseTwseSblHist(payload, expectedYmd) {
     '代號', '名稱', '前日餘額', '賣出', '買進', '現券', '今日餘額', '次一營業日限額',
     '前日餘額', '當日賣出', '當日還券', '當日調整', '當日餘額', '次一營業日可限額', '備註',
   ];
+  const legacyFields = [
+    '代號', '名稱', '前日餘額', '賣出', '買進', '現券', '今日餘額', '次一營業日限額',
+    '前日餘額', '賣出', '庫存異動', '今日餘額', '可使用額度', '備註',
+  ];
+  const isLegacy = Array.isArray(fields)
+    && fields.length === legacyFields.length
+    && fields.every((field, index) => field === legacyFields[index]);
+  if (isLegacy) {
+    if (!Array.isArray(payload.data)) throw new Error('TWT93U: data is not an array');
+    return payload.data.map((row, index) => {
+      if (!Array.isArray(row) || row.length !== legacyFields.length) {
+        throw new Error(`TWT93U: data[${index}] width must be ${legacyFields.length}`);
+      }
+      return {
+        SecuritiesCompanyCode: String(row[0] ?? '').trim(),
+        CompanyName: String(row[1] ?? '').trim(),
+        SecuritiesBorrowingBalanceOfTheMarketDay: row[11],
+      };
+    });
+  }
   if (!Array.isArray(fields) || fields.length !== expectedFields.length) {
     throw new Error('TWT93U: fields length must be 15');
   }

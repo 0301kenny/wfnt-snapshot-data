@@ -267,6 +267,27 @@ async function acquireLock(rootDir, { now, logger, processKill, renameImpl }) {
   throw new Error('could not acquire history backfill lock');
 }
 
+export async function acquireHistoryBackfillLock(rootDir, {
+  now = () => new Date(),
+  logger = console,
+  processKill = process.kill.bind(process),
+  renameImpl = rename,
+} = {}) {
+  const lock = await acquireLock(resolve(rootDir), { now, logger, processKill, renameImpl });
+  let released = false;
+  return {
+    ...lock,
+    async release() {
+      if (released || !lock.acquired) return;
+      released = true;
+      const owner = await readLockOwner(lock.path);
+      if (owner.token === lock.token) {
+        await rm(lock.path, { recursive: true, force: true });
+      }
+    },
+  };
+}
+
 async function readBytesIfExists(path) {
   try {
     return await readFile(path);
@@ -285,6 +306,12 @@ function validateDataPayload(endpoint, bytes, iso) {
   } catch (error) {
     return { kind: 'quarantined', payload, error };
   }
+}
+
+export function validateHistoryBackfillBytes(sourceDataset, bytes, iso) {
+  const endpoint = DAILY_ENDPOINTS.find((candidate) => candidate.sourceDataset === sourceDataset);
+  if (!endpoint) throw new Error(`unsupported history dataset: ${sourceDataset}`);
+  return validateDataPayload(endpoint, bytes, assertIso('date', iso));
 }
 
 async function existingDataResult(rootDir, endpoint, iso) {
@@ -439,23 +466,14 @@ export async function runHistoryBackfill({
   if (typeof fetchImpl !== 'function') throw new Error('fetchImpl must be a function');
   const parsedPauseWindow = parsePauseWindow(pauseWindow);
 
-  const lock = await acquireLock(rootDir, {
+  const lock = await acquireHistoryBackfillLock(rootDir, {
     now,
     logger,
     processKill,
     renameImpl: lockRenameImpl,
   });
   if (!lock.acquired) return { status: 'LOCKED', exitCode: 0 };
-  let released = false;
-  const release = async () => {
-    if (released) return;
-    released = true;
-    const owner = await readLockOwner(lock.path);
-    if (owner.token === lock.token) {
-      await rm(lock.path, { recursive: true, force: true });
-    }
-  };
-  const removeSignalHandlers = installSignalHandlers(release);
+  const removeSignalHandlers = installSignalHandlers(lock.release);
 
   try {
     const saved = await readJsonIfExists(progressPath(rootDir), null);
@@ -579,7 +597,7 @@ export async function runHistoryBackfill({
     return { status: progress.status, exitCode: 0, progress };
   } finally {
     removeSignalHandlers();
-    await release();
+    await lock.release();
   }
 }
 
