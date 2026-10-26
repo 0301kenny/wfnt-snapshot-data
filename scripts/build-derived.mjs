@@ -35,13 +35,16 @@ const BUILD_VERSION = 4;
 const BUILD_DIR_NAME = '.derived-build';
 const DAILY_PROGRESS_NAME = 'daily-progress.jsonl';
 
-const DAILY_SOURCES = [
+export const DAILY_SOURCES = [
   'twse/mi_index',
   'twse/stock_day_all',
   'twse/bwibbu_all',
   'twse/mi_margn',
   'twse/mi_index_hist',
   'twse/t86_hist',
+  'twse/twt38u_hist',
+  'twse/twt44u_hist',
+  'twse/twt43u_hist',
   'twse/mi_margn_hist',
   'twse/bwibbu_hist',
   'twse/sbl_hist',

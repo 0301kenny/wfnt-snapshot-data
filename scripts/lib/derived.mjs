@@ -26,6 +26,9 @@ export const DERIVED_INPUT_DATASETS = new Set([
   'twse/bwibbu_all',
   'twse/mi_index_hist',
   'twse/t86_hist',
+  'twse/twt38u_hist',
+  'twse/twt44u_hist',
+  'twse/twt43u_hist',
   'twse/mi_margn_hist',
   'twse/sbl_hist',
   'tpex/daily_quotes_hist',
@@ -734,6 +737,64 @@ export function parseTwseT86Hist(payload) {
       fd: compactNumber(row?.[indexes.dealer]),
     };
   });
+}
+
+const TWT_FOREIGN_TRUST_FIELDS = Object.freeze(['', '證券代號', '證券名稱', '買進股數', '賣出股數', '買賣超股數']);
+const TWT_DEALER_FIELDS = Object.freeze(['證券代號', '證券名稱', '買進股數', '賣出股數', '買賣超股數']);
+
+function parseTwtLegacyInsti(payload, label, fields, idIndex) {
+  if (payload?.stat !== 'OK') throw new Error(`${label}: stat is not OK`);
+  if (!Array.isArray(payload.data)) throw new Error(`${label}: data is not an array`);
+  if (!fieldsEqual(payload.fields, fields)) throw new Error(`${label}: unexpected fields`);
+  const seen = new Set();
+  return payload.data.map((row, index) => {
+    if (!Array.isArray(row) || row.length !== fields.length) {
+      throw new Error(`${label}: data[${index}] width must be ${fields.length}`);
+    }
+    const id = String(row[idIndex] ?? '').trim();
+    if (seen.has(id)) throw new Error(`${label}: duplicate id ${id}`);
+    seen.add(id);
+    const net = compactNumber(row[fields.length - 1]);
+    if (net === null) throw new Error(`${label}: data[${index}] net is not numeric`);
+    return { id, name: String(row[idIndex + 1] ?? '').trim(), net };
+  });
+}
+
+export function parseTwseTwt38uHist(payload) {
+  return parseTwtLegacyInsti(payload, 'TWT38U', TWT_FOREIGN_TRUST_FIELDS, 1);
+}
+
+export function parseTwseTwt44uHist(payload) {
+  return parseTwtLegacyInsti(payload, 'TWT44U', TWT_FOREIGN_TRUST_FIELDS, 1);
+}
+
+export function parseTwseTwt43uHist(payload) {
+  return parseTwtLegacyInsti(payload, 'TWT43U', TWT_DEALER_FIELDS, 0);
+}
+
+export function mergeTwseLegacyInsti(twt38uPayload, twt44uPayload, twt43uPayload) {
+  const merged = new Map();
+  const add = (rows, key) => {
+    for (const row of rows) {
+      let entry = merged.get(row.id);
+      if (!entry) {
+        entry = { id: row.id, name: row.name, ff: 0, ft: 0, fd: 0 };
+        merged.set(row.id, entry);
+      }
+      entry[key] = row.net;
+    }
+  };
+  add(parseTwseTwt38uHist(twt38uPayload), 'ff');
+  add(parseTwseTwt44uHist(twt44uPayload), 'ft');
+  add(parseTwseTwt43uHist(twt43uPayload), 'fd');
+  return [...merged.values()].map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    fi: entry.ff + entry.ft + entry.fd,
+    ff: entry.ff,
+    ft: entry.ft,
+    fd: entry.fd,
+  }));
 }
 
 export function parseTwseBwibbuHist(payload) {
@@ -1933,6 +1994,9 @@ export async function applyDailyDate(rootDir, isoDate, {
     twseValuationOpenApi,
     twseCloseHistRaw,
     twseT86HistRaw,
+    twseTwt38uRaw,
+    twseTwt44uRaw,
+    twseTwt43uRaw,
     twseMarginHistRaw,
     tpexCloseHistRaw,
     tpexInstiHistRaw,
@@ -1952,6 +2016,9 @@ export async function applyDailyDate(rootDir, isoDate, {
     readJsonRaw(rootDir, 'twse/bwibbu_all', isoDate),
     readJsonRaw(rootDir, 'twse/mi_index_hist', isoDate),
     readJsonRaw(rootDir, 'twse/t86_hist', isoDate),
+    readJsonRaw(rootDir, 'twse/twt38u_hist', isoDate),
+    readJsonRaw(rootDir, 'twse/twt44u_hist', isoDate),
+    readJsonRaw(rootDir, 'twse/twt43u_hist', isoDate),
     readJsonRaw(rootDir, 'twse/mi_margn_hist', isoDate),
     readJsonRaw(rootDir, 'tpex/daily_quotes_hist', isoDate),
     readJsonRaw(rootDir, 'tpex/insti_hist', isoDate),
@@ -1980,7 +2047,11 @@ export async function applyDailyDate(rootDir, isoDate, {
   const twseMargin = twseMarginOpenApi !== null
     ? twseMarginOpenApi
     : twseMarginHistRaw === null ? null : parseTwseMiMargnHist(twseMarginHistRaw);
-  const twseT86 = twseT86HistRaw === null ? null : parseTwseT86Hist(twseT86HistRaw);
+  const twseT86 = twseT86HistRaw !== null
+    ? parseTwseT86Hist(twseT86HistRaw)
+    : twseTwt38uRaw !== null && twseTwt44uRaw !== null && twseTwt43uRaw !== null
+      ? mergeTwseLegacyInsti(twseTwt38uRaw, twseTwt44uRaw, twseTwt43uRaw)
+      : null;
   const twseValuation = twseValuationOpenApi !== null
     ? twseValuationOpenApi
     : twseValuationHistRaw === null ? null : parseTwseBwibbuHist(twseValuationHistRaw);

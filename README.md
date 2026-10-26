@@ -162,6 +162,9 @@ data/raw/{source_dataset}/{yyyy}/{yyyy}-{mm}.json
 ```text
 data/raw/twse/mi_index_hist/{yyyy}/{date}.json
 data/raw/twse/t86_hist/{yyyy}/{date}.json
+data/raw/twse/twt38u_hist/{yyyy}/{date}.json
+data/raw/twse/twt44u_hist/{yyyy}/{date}.json
+data/raw/twse/twt43u_hist/{yyyy}/{date}.json
 data/raw/twse/mi_margn_hist/{yyyy}/{date}.json
 data/raw/twse/bwibbu_hist/{yyyy}/{date}.json
 data/raw/twse/sbl_hist/{yyyy}/{date}.json
@@ -172,9 +175,11 @@ data/raw/tpex/pe_hist/{yyyy}/{date}.json
 data/raw/tpex/sbl_hist/{yyyy}/{date}.json
 ```
 
+2012-05-02 以前 `T86` 回「查詢日期小於101年05月02日」。`scripts/history-backfill.mjs` 因此對 2012-05-01 以前(含)的日期另抓官方 TWSE `TWT38U`(外資)、`TWT44U`(投信)、`TWT43U`(自營商)三支逐日端點(`twt38u_hist`/`twt44u_hist`/`twt43u_hist`,無 `selectType`),2012-05-02 起不請求。每支只列當天有買賣的個股;derived 在該日 `t86_hist` 不存在且三支皆存在時,依代號聯集、缺席補 0,`ff`/`ft`/`fd` 取各支「買賣超股數」,`fi` 為三者相加;`t86_hist` 存在時一律只用 T86。
+
 TWSE 與 TPEX 各自獨立判斷交易日與 openapi 是否存在。當日已有 `twse/stock_day_all` raw 時,MI_INDEX 與 MI_MARGN 不重複抓取;已有 `tpex/mainboard_close` raw 時則跳過 dailyQuotes、dailyTrade、balance 三個 TPEX legacy 端點。承重的 MI_INDEX 與 dailyQuotes 在需要判斷交易日時仍會 fetch；其他純資料端點若目標 raw 已存在,會在 fetch 前略過。Derived 優先使用已有 openapi,只在對應 openapi 缺席時以 hist 補位,並共用日更的單一轉換路徑；借券 raw 本票不接 derived。範圍回補支援 checkpoint、固定 delay、指數退避與 write-on-change。
 
-所有 backfill-only 來源都在 `scripts/endpoints.mjs` 的 `BACKFILL_ENDPOINTS` 宣告 cadence；10 個 legacy JSON 來源為 `daily`、兩個月營收與一個櫃買歷史指數來源為 `monthly`、兩個季度財報來源為 `quarterly`。缺口覆蓋只取 `daily` 項目再加上各市場 close source。
+所有 backfill-only 來源都在 `scripts/endpoints.mjs` 的 `BACKFILL_ENDPOINTS` 宣告 cadence；13 個 legacy JSON 來源為 `daily`、兩個月營收與一個櫃買歷史指數來源為 `monthly`、兩個季度財報來源為 `quarterly`。缺口覆蓋只取 `daily` 項目再加上各市場 close source。
 
 櫃買歷史指數以月查詢回補，官方 JSON bytes 原樣保存於：
 

@@ -372,6 +372,21 @@ export const BACKFILL_ENDPOINTS = {
     sourceDataset: 'twse/t86_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/fund/T86?date=${ymd}&selectType=ALL&response=json`,
   },
+  twse_twt38u_hist: {
+    cadence: 'daily',
+    sourceDataset: 'twse/twt38u_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/fund/TWT38U?date=${ymd}&response=json`,
+  },
+  twse_twt44u_hist: {
+    cadence: 'daily',
+    sourceDataset: 'twse/twt44u_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/fund/TWT44U?date=${ymd}&response=json`,
+  },
+  twse_twt43u_hist: {
+    cadence: 'daily',
+    sourceDataset: 'twse/twt43u_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/fund/TWT43U?date=${ymd}&response=json`,
+  },
   twse_mi_margn_hist: {
     cadence: 'daily',
     sourceDataset: 'twse/mi_margn_hist',
