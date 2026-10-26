@@ -326,6 +326,9 @@ test('backfill endpoints remain separate from the 31-entry snapshot endpoint lis
     'tpex_quarterly_fin_hist',
     'twse_mi_index_hist',
     'twse_t86_hist',
+    'twse_twt38u_hist',
+    'twse_twt44u_hist',
+    'twse_twt43u_hist',
     'twse_mi_margn_hist',
     'twse_bwibbu_hist',
     'twse_sbl_hist',
@@ -1167,7 +1170,7 @@ test('DERIVED_INPUT_DATASETS exactly matches the namespaces read by applyDailyDa
   const actual = [...applySource.matchAll(/read(?:Json|Text)Raw\(rootDir, '([^']+)', isoDate\)/g)]
     .map((match) => match[1]);
   const registered = [...DERIVED_INPUT_DATASETS];
-    assert.equal(new Set(actual).size, 18);
+    assert.equal(new Set(actual).size, 21);
   assert.deepEqual([...registered].sort(), [...actual].sort());
 
   const drifted = registered.filter((dataset) => dataset !== 'twse/mi_index');

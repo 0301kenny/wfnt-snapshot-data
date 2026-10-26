@@ -107,6 +107,20 @@ function dateFromUrl(url) {
   return (parsed.searchParams.get('date') ?? '').replaceAll('/', '-').replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3');
 }
 
+function twtFixture(kind, date) {
+  const fields = kind === 'TWT43U'
+    ? ['證券代號', '證券名稱', '買進股數', '賣出股數', '買賣超股數']
+    : ['', '證券代號', '證券名稱', '買進股數', '賣出股數', '買賣超股數'];
+  const row = ['2330  ', '台積電          ', '2', '1', '1'];
+  return {
+    stat: 'OK',
+    date: date.replaceAll('-', ''),
+    fields,
+    data: [kind === 'TWT43U' ? row : [' ', ...row]],
+    total: 1,
+  };
+}
+
 function fixtureFetcher({
   calls = [],
   fail = () => false,
@@ -114,6 +128,7 @@ function fixtureFetcher({
   tpexNonTrading = () => false,
   unavailableT86 = false,
   oldTwseSbl = false,
+  twtLegacy = {},
 } = {}) {
   return async (url) => {
     calls.push(url);
@@ -127,6 +142,8 @@ function fixtureFetcher({
         ? { stat: '查詢日期小於101年05月02日，請重新查詢!' }
         : t86Fixture()));
     }
+    const twt = /\/fund\/(TWT38U|TWT44U|TWT43U)\?/.exec(url);
+    if (twt) return response(jsonBytes(twtLegacy[twt[1]] ?? twtFixture(twt[1], date)));
     if (url.includes('/MI_MARGN?')) return response(jsonBytes(miMargnFixture()));
     if (url.includes('/BWIBBU_d?')) return response(jsonBytes(bwibbuFixture()));
     if (url.includes('/TWT93U?')) return response(jsonBytes(twseSblFixture(date.replaceAll('-', ''), oldTwseSbl)));
@@ -486,6 +503,52 @@ test('CLI rejects unknown flags, reversed/future ranges, and bare numeric flags'
     for (const args of cases) {
       const child = spawnSync(process.execPath, [cli, ...args, '--out', root], { cwd: REPO_ROOT, encoding: 'utf8' });
       assert.notEqual(child.status, 0, `${args.join(' ')} unexpectedly succeeded`);
+    }
+  });
+});
+
+const LEGACY_INSTI_DATASETS = ['twse/twt38u_hist', 'twse/twt44u_hist', 'twse/twt43u_hist'];
+
+test('legacy institutional endpoints are requested only on or before 2012-05-01', async () => {
+  await withTempDir(async (root) => {
+    const calls = [];
+    const result = await run(root, {
+      fromIso: '2012-05-01',
+      toIso: '2012-05-02',
+      fetchImpl: fixtureFetcher({ calls }),
+    });
+    assert.equal(result.status, 'DONE');
+    for (const name of ['TWT38U', 'TWT44U', 'TWT43U']) {
+      const hits = calls.filter((url) => url.includes(`/fund/${name}?`));
+      assert.equal(hits.length, 1, name);
+      assert.equal(dateFromUrl(hits[0]), '2012-05-01');
+      assert.equal(hits[0].includes('selectType'), false);
+    }
+    for (const dataset of LEGACY_INSTI_DATASETS) {
+      assert.equal(await exists(rawPath(root, dataset, '2012-05-01')), true, dataset);
+      assert.equal(await exists(rawPath(root, dataset, '2012-05-02')), false, dataset);
+      assert.equal(result.progress.endpoints[dataset].written, 1, dataset);
+    }
+    assert.equal(calls.filter((url) => url.includes('/fund/T86?')).length, 2);
+  });
+});
+
+test('a base-shaped progress file without the legacy institutional keys resumes to DONE', async () => {
+  await withTempDir(async (root) => {
+    const options = { fromIso: '2012-05-01', toIso: '2012-05-02', maxMinutes: 0 };
+    const first = await run(root, options);
+    assert.equal(first.status, 'IN_PROGRESS');
+    const path = join(root, 'data/history-backfill/progress.json');
+    const old = await progress(root);
+    for (const dataset of LEGACY_INSTI_DATASETS) delete old.endpoints[dataset];
+    old.status = 'IN_PROGRESS';
+    await writeFile(path, `${JSON.stringify(old, null, 2)}\n`);
+    const resumed = await run(root, { ...options, maxMinutes: 28 });
+    assert.equal(resumed.status, 'DONE');
+    for (const dataset of LEGACY_INSTI_DATASETS) {
+      assert.deepEqual(resumed.progress.endpoints[dataset], {
+        written: 1, exists: 0, unavailable: 0, quarantined: 0, failed: 0,
+      }, dataset);
     }
   });
 });

@@ -22,12 +22,17 @@ import {
   parseTwseMiIndexHist,
   parseTwseMiMargnHist,
   parseTwseT86Hist,
+  parseTwseTwt38uHist,
+  parseTwseTwt43uHist,
+  parseTwseTwt44uHist,
 } from './derived.mjs';
 import { readJsonIfExists, writeFileEnsured } from './io.mjs';
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
 const PAUSE_RE = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/;
 const MAX_HISTORY = 50;
+
+const LEGACY_INSTI_LAST_DATE = '2012-05-01';
 
 const DAILY_ENDPOINTS = [
   {
@@ -38,6 +43,24 @@ const DAILY_ENDPOINTS = [
     parse: parseTwseMiIndexHist,
   },
   { ...BACKFILL_ENDPOINTS.twse_t86_hist, market: 'twse', parse: parseTwseT86Hist },
+  {
+    ...BACKFILL_ENDPOINTS.twse_twt38u_hist,
+    market: 'twse',
+    maxIso: LEGACY_INSTI_LAST_DATE,
+    parse: parseTwseTwt38uHist,
+  },
+  {
+    ...BACKFILL_ENDPOINTS.twse_twt44u_hist,
+    market: 'twse',
+    maxIso: LEGACY_INSTI_LAST_DATE,
+    parse: parseTwseTwt44uHist,
+  },
+  {
+    ...BACKFILL_ENDPOINTS.twse_twt43u_hist,
+    market: 'twse',
+    maxIso: LEGACY_INSTI_LAST_DATE,
+    parse: parseTwseTwt43uHist,
+  },
   { ...BACKFILL_ENDPOINTS.twse_mi_margn_hist, market: 'twse', parse: parseTwseMiMargnHist },
   { ...BACKFILL_ENDPOINTS.twse_bwibbu_hist, market: 'twse', parse: parseTwseBwibbuHist },
   {
@@ -404,8 +427,15 @@ function addFailure(progress, date, sourceDataset, error) {
 }
 
 function recordEndpoint(progress, endpoint, result) {
-  const counts = progress.endpoints[endpoint.sourceDataset];
-  counts[result.kind] += 1;
+  progress.endpoints ??= {};
+  const counts = progress.endpoints[endpoint.sourceDataset] ??= {
+    written: 0,
+    exists: 0,
+    unavailable: 0,
+    quarantined: 0,
+    failed: 0,
+  };
+  counts[result.kind] = (counts[result.kind] ?? 0) + 1;
 }
 
 async function finishLaunch(rootDir, progress, launch, status, now, daysAtStart) {
@@ -529,6 +559,7 @@ export async function runHistoryBackfill({
         marketStates[market] = 'trading';
 
         for (const endpoint of dataEndpoints) {
+          if (endpoint.maxIso && iso > endpoint.maxIso) continue;
           const result = await processDataEndpoint(rootDir, endpoint, iso, fetchOptions);
           recordEndpoint(progress, endpoint, result);
           if (result.kind === 'failed') {
