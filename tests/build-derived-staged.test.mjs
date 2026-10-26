@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildDerived,
+  DAILY_SOURCES,
   ChangedDailyRawError,
   OlderDailyRawError,
   SwitchWindowError,
 } from '../scripts/build-derived.mjs';
-import { applyDailyDate } from '../scripts/lib/derived.mjs';
+import { applyDailyDate, DERIVED_INPUT_DATASETS } from '../scripts/lib/derived.mjs';
 
 async function tempRoot() {
   const root = await mkdtemp(join(tmpdir(), 'wfnt-derived-staged-'));
@@ -658,4 +659,40 @@ test('--reset discards only staged progress and starts daily work from the first
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test('adding twt43u raw for an applied date refuses switching and preserves active and staged bytes', async () => {
+  const fixture = await makeDailyFixture(2);
+  try {
+    await seedActive(fixture.root);
+    const activeBefore = await treeBytes(join(fixture.root, 'data', 'derived'));
+    let stagedAtChange;
+    await assert.rejects(buildDerived({
+      rootDir: fixture.root,
+      hooks: {
+        async afterCheckpoint({ phase, item }) {
+          if (phase === 'daily' && item === fixture.dates[1]) {
+            await writeJson(fixture.root, 'twse/twt43u_hist', item, []);
+            stagedAtChange = await treeBytes(
+              join(fixture.root, 'data', '.derived-build', 'root', 'data', 'derived'),
+            );
+          }
+        },
+      },
+    }), (error) => error instanceof ChangedDailyRawError
+      && error.dates.length === 1
+      && error.dates[0] === fixture.dates[1]);
+    assert.deepEqual(await treeBytes(join(fixture.root, 'data', 'derived')), activeBefore);
+    assert.deepEqual(
+      await treeBytes(join(fixture.root, 'data', '.derived-build', 'root', 'data', 'derived')),
+      stagedAtChange,
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('full-rebuild DAILY_SOURCES equals DERIVED_INPUT_DATASETS', () => {
+  assert.equal(new Set(DAILY_SOURCES).size, DAILY_SOURCES.length);
+  assert.deepEqual([...DAILY_SOURCES].sort(), [...DERIVED_INPUT_DATASETS].sort());
 });

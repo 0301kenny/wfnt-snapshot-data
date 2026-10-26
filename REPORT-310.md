@@ -50,3 +50,25 @@ Executor: Claude cc-executor (fallback; codex quota exhausted, Human re-dispatch
 
 - 無 Stop/Escalate 條款觸發；未連網、未在真實 `data/` 執行寫入腳本、未在主目錄操作；`data` symlink 未 commit（逐檔 `git add`）。
 - `fi` 對 2012-05-02 前缺官方合計可比，沿用 Hard Fact 5 的兩日推論（高機率，非逐日證明）。
+
+## r2（修正輪：全量重建追蹤三支新 raw）
+
+status: READY_FOR_REVIEW（r1 head `b4afe27` 未改寫；r2 為其上新增 commit，SHA 見最終回覆）
+
+### 改動位置
+- `scripts/build-derived.mjs`: `DAILY_SOURCES` 加 `twse/twt38u_hist`／`twse/twt44u_hist`／`twse/twt43u_hist`（緊接 `twse/t86_hist`），並 `export`。未動 `BUILD_VERSION` 或狀態檔格式。
+- `tests/build-derived-staged.test.mjs`: 只新增 2 條測試（既有未動）與兩個 import（`DAILY_SOURCES`、`DERIVED_INPUT_DATASETS`）：
+  - `adding twt43u raw for an applied date refuses switching and preserves active and staged bytes`（比照 sbl 同型：`ChangedDailyRawError`、active 與 staged 位元組不變）。
+  - `full-rebuild DAILY_SOURCES equals DERIVED_INPUT_DATASETS`（無重複且排序後相等）。
+
+### `node --test tests/`
+```
+# tests 352
+# pass 352
+# fail 0
+```
+
+### 消融（皆實跑後還原）
+- ① `DAILY_SOURCES` 拿掉 `twse/twt43u_hist`：紅 `adding twt43u raw for an applied date refuses switching…`、`full-rebuild DAILY_SOURCES equals DERIVED_INPUT_DATASETS`（350 pass / 2 fail）。
+- ② 守門測試比對的 `DERIVED_INPUT_DATASETS` 拿掉一項：紅 `full-rebuild DAILY_SOURCES equals DERIVED_INPUT_DATASETS`（351 pass / 1 fail）。
+- 還原後 352/352。
