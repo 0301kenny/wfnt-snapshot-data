@@ -168,6 +168,10 @@ data/raw/twse/twt43u_hist/{yyyy}/{date}.json
 data/raw/twse/mi_margn_hist/{yyyy}/{date}.json
 data/raw/twse/bwibbu_hist/{yyyy}/{date}.json
 data/raw/twse/sbl_hist/{yyyy}/{date}.json
+data/raw/twse/qfiis_hist/{yyyy}/{date}.json
+data/raw/twse/twt53u_hist/{yyyy}/{date}.json
+data/raw/twse/twtb4u_hist/{yyyy}/{date}.json
+data/raw/twse/bfiauu_hist/{yyyy}/{date}.json
 data/raw/tpex/daily_quotes_hist/{yyyy}/{date}.json
 data/raw/tpex/insti_hist/{yyyy}/{date}.json
 data/raw/tpex/margin_hist/{yyyy}/{date}.json
@@ -210,6 +214,22 @@ node scripts/backfill.mjs --from 2021-07-01 --to 2021-07-31 --out ./.backfill-ou
 
 ```bash
 dates="$(node scripts/detect-gaps.mjs --dates-only)" && node scripts/backfill.mjs --dates "$dates"
+```
+
+### TWSE W3 raw-only endpoints
+
+`twse/qfiis_hist`(外資持股)、`twse/twt53u_hist`(零股)、`twse/twtb4u_hist`(當沖)、`twse/bfiauu_hist`(鉅額)四支逐日端點由 `scripts/history-backfill.mjs` 在 TWSE 交易日請求，只存官方 bytes，不產生 derived。當沖僅處理 2014-01-06 以後的日期，更早日期不發請求也不計數。驗證只看結構:`stat` 為 `OK`、存在首欄為 `證券代號` 的表、每列寬度等於該表欄數；0 列回應（含鉅額交易日無成交）視為 `unavailable` 不落檔。這些端點不進每日排程，之後以定期重跑 runner 補新日期。
+
+TWSE 發行量加權股價報酬指數以月查詢回補（民國年日期，2 位數年份前補半形空白）：
+
+```text
+data/raw/twse/mfi94u_hist/{yyyy}/{yyyy-mm}.json
+```
+
+合法月檔須 `stat: "OK"`、`fields` 為 `["日　期","發行量加權股價報酬指數"]`（中間為全形空白）、每列 2 欄、至少一列，且每列日期都落在查詢月份。歷史月份已有合法 raw 即跳過，台北當月每次重抓並 write-on-change；只寫 raw：
+
+```bash
+node scripts/backfill-twse-return-index.mjs --from 2006-10 --to 2026-10 --out /tmp/wfnt-twse-return-index --delay-ms 3000
 ```
 
 ### Unattended 2006–2021 raw history runner

@@ -121,6 +121,33 @@ function twtFixture(kind, date) {
   };
 }
 
+function w3Fixture(kind) {
+  if (kind === 'MI_QFIIS') {
+    return {
+      stat: 'OK',
+      fields: ['證券代號', '證券名稱', '國際證券編碼', '發行股數'],
+      data: [['2330', '台積電', 'TW0002330008', '1']],
+    };
+  }
+  if (kind === 'TWT53U') {
+    return { stat: 'OK', fields: ['證券代號', '證券名稱', '成交股數'], data: [['2330', '台積電', '1']] };
+  }
+  if (kind === 'TWTB4U') {
+    return {
+      stat: 'OK',
+      tables: [
+        { fields: ['當日沖銷交易總成交股數', '占比'], data: [['1', '0.1']] },
+        { fields: ['證券代號', '證券名稱', '當日沖銷交易成交股數'], data: [['2330', '台積電', '1']] },
+      ],
+    };
+  }
+  return {
+    stat: 'OK',
+    fields: ['證券代號', '證券名稱', '成交價', '成交股數', '成交金額'],
+    data: [['2330', '台積電', '1', '1', '1']],
+  };
+}
+
 function fixtureFetcher({
   calls = [],
   fail = () => false,
@@ -129,6 +156,7 @@ function fixtureFetcher({
   unavailableT86 = false,
   oldTwseSbl = false,
   twtLegacy = {},
+  w3 = {},
 } = {}) {
   return async (url) => {
     calls.push(url);
@@ -144,6 +172,8 @@ function fixtureFetcher({
     }
     const twt = /\/fund\/(TWT38U|TWT44U|TWT43U)\?/.exec(url);
     if (twt) return response(jsonBytes(twtLegacy[twt[1]] ?? twtFixture(twt[1], date)));
+    const w3Match = /\/(MI_QFIIS|TWT53U|TWTB4U|BFIAUU)\?/.exec(url);
+    if (w3Match) return response(jsonBytes(w3[w3Match[1]] ?? w3Fixture(w3Match[1])));
     if (url.includes('/MI_MARGN?')) return response(jsonBytes(miMargnFixture()));
     if (url.includes('/BWIBBU_d?')) return response(jsonBytes(bwibbuFixture()));
     if (url.includes('/TWT93U?')) return response(jsonBytes(twseSblFixture(date.replaceAll('-', ''), oldTwseSbl)));
@@ -194,7 +224,7 @@ test('history runner stores byte-identical raw only and leaves legacy checkpoint
     assert.deepEqual(await readFile(path), jsonBytes(miIndexFixture()));
     assert.equal(await exists(join(root, 'data/derived')), false);
     assert.deepEqual(await readFile(join(root, '.backfill-progress.json')), legacy);
-    assert.equal(calls.length, 30);
+    assert.equal(calls.length, 42);
   });
 });
 
@@ -549,6 +579,112 @@ test('a base-shaped progress file without the legacy institutional keys resumes 
       assert.deepEqual(resumed.progress.endpoints[dataset], {
         written: 1, exists: 0, unavailable: 0, quarantined: 0, failed: 0,
       }, dataset);
+    }
+  });
+});
+
+const W3_DATASETS = ['twse/qfiis_hist', 'twse/twt53u_hist', 'twse/twtb4u_hist', 'twse/bfiauu_hist'];
+const NON_TRADING_STAT = '很抱歉，沒有符合條件的資料!';
+
+// TWSE closes on the weekend days of 2014-01-04/05; everything else is a trading day.
+function weekendAwareFetcher(options = {}) {
+  const inner = fixtureFetcher(options);
+  return async (url) => {
+    if (url.includes('/MI_INDEX?') && ['2014-01-04', '2014-01-05'].includes(dateFromUrl(url))) {
+      return response(jsonBytes({ stat: NON_TRADING_STAT }));
+    }
+    return inner(url);
+  };
+}
+
+function datesRequested(calls, name) {
+  return calls.filter((url) => url.includes(`/${name}?`)).map(dateFromUrl).sort();
+}
+
+test('W3 daily endpoints: three run on every trading day, day trading only from 2014-01-06', async () => {
+  await withTempDir(async (root) => {
+    const calls = [];
+    const result = await run(root, {
+      fromIso: '2014-01-03',
+      toIso: '2014-01-06',
+      fetchImpl: weekendAwareFetcher({ calls }),
+    });
+    assert.equal(result.status, 'DONE');
+    for (const name of ['MI_QFIIS', 'TWT53U', 'BFIAUU']) {
+      assert.deepEqual(datesRequested(calls, name), ['2014-01-03', '2014-01-06'], name);
+    }
+    assert.deepEqual(datesRequested(calls, 'TWTB4U'), ['2014-01-06']);
+    assert.deepEqual(
+      await readFile(rawPath(root, 'twse/twt53u_hist', '2014-01-06')),
+      jsonBytes(w3Fixture('TWT53U')),
+    );
+    assert.deepEqual(
+      await readFile(rawPath(root, 'twse/twtb4u_hist', '2014-01-06')),
+      jsonBytes(w3Fixture('TWTB4U')),
+    );
+    assert.equal(await exists(rawPath(root, 'twse/twtb4u_hist', '2014-01-03')), false);
+    assert.equal(result.progress.endpoints['twse/twtb4u_hist'].written, 1);
+    assert.equal(result.progress.endpoints['twse/qfiis_hist'].written, 2);
+  });
+});
+
+test('W3 day trading is neither requested nor counted before 2014-01-06', async () => {
+  await withTempDir(async (root) => {
+    const calls = [];
+    const result = await run(root, {
+      fromIso: '2013-12-30',
+      toIso: '2013-12-31',
+      fetchImpl: fixtureFetcher({ calls }),
+    });
+    assert.equal(result.status, 'DONE');
+    assert.equal(datesRequested(calls, 'TWTB4U').length, 0);
+    assert.deepEqual(result.progress.endpoints['twse/twtb4u_hist'], {
+      written: 0, exists: 0, unavailable: 0, quarantined: 0, failed: 0,
+    });
+    assert.equal(datesRequested(calls, 'MI_QFIIS').length, 2);
+  });
+});
+
+test('W3 empty block-trade day is unavailable and unwritten; malformed rows are quarantined', async () => {
+  await withTempDir(async (root) => {
+    const result = await run(root, {
+      fetchImpl: fixtureFetcher({
+        w3: {
+          BFIAUU: { stat: 'OK', fields: ['證券代號', '證券名稱'], data: [] },
+          TWT53U: { stat: 'OK', fields: ['證券代號', '證券名稱', '成交股數'], data: [['2330', '台積電']] },
+        },
+      }),
+    });
+    assert.equal(result.status, 'DONE');
+    assert.equal(await exists(rawPath(root, 'twse/bfiauu_hist', '2021-01-01')), false);
+    assert.equal(result.progress.endpoints['twse/bfiauu_hist'].unavailable, 1);
+    assert.equal(await exists(rawPath(root, 'twse/twt53u_hist', '2021-01-01')), false);
+    assert.equal(result.progress.endpoints['twse/twt53u_hist'].quarantined, 1);
+    assert.equal(
+      await exists(join(root, 'data/history-backfill/quarantine/twse/twt53u_hist/2021/2021-01-01.json')),
+      true,
+    );
+  });
+});
+
+test('a base-shaped progress file without the W3 keys resumes to DONE with correct counts', async () => {
+  await withTempDir(async (root) => {
+    const options = { fromIso: '2021-01-01', toIso: '2021-01-02', maxMinutes: 0 };
+    const first = await run(root, options);
+    assert.equal(first.status, 'IN_PROGRESS');
+    const path = join(root, 'data/history-backfill/progress.json');
+    const old = await progress(root);
+    for (const dataset of W3_DATASETS) delete old.endpoints[dataset];
+    old.status = 'IN_PROGRESS';
+    await writeFile(path, `${JSON.stringify(old, null, 2)}\n`);
+    const resumed = await run(root, { ...options, maxMinutes: 28 });
+    assert.equal(resumed.status, 'DONE');
+    for (const dataset of W3_DATASETS) {
+      // Counts restart from 0 for the missing key: only the resumed 2021-01-01 is counted.
+      assert.deepEqual(resumed.progress.endpoints[dataset], {
+        written: 1, exists: 0, unavailable: 0, quarantined: 0, failed: 0,
+      }, dataset);
+      assert.equal(await exists(rawPath(root, dataset, '2021-01-02')), true, dataset);
     }
   });
 });

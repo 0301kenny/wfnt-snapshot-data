@@ -332,6 +332,10 @@ test('backfill endpoints remain separate from the 31-entry snapshot endpoint lis
     'twse_mi_margn_hist',
     'twse_bwibbu_hist',
     'twse_sbl_hist',
+    'twse_qfiis_hist',
+    'twse_twt53u_hist',
+    'twse_twtb4u_hist',
+    'twse_bfiauu_hist',
     'tpex_daily_quotes_hist',
     'tpex_insti_hist',
     'tpex_margin_hist',
@@ -341,6 +345,7 @@ test('backfill endpoints remain separate from the 31-entry snapshot endpoint lis
     'taifex_foreign_futures',
     'taifex_vix_monthly',
     'tpex_index_hist',
+    'twse_mfi94u_hist',
   ]);
   assert.equal(BACKFILL_ENDPOINTS.twse_monthly_revenue_hist.sourceDataset, 'twse/monthly_revenue_hist');
   assert.equal(BACKFILL_ENDPOINTS.tpex_monthly_revenue_hist.sourceDataset, 'tpex/monthly_revenue_hist');

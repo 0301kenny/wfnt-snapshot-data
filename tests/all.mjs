@@ -31,6 +31,8 @@ import './tdcc-pending.test.mjs';
 import './screener-index.test.mjs';
 import './twse-dividend-yield-repair.test.mjs';
 import './build-derived-staged.test.mjs';
+import './twse-w3-daily.test.mjs';
+import './twse-return-index.test.mjs';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

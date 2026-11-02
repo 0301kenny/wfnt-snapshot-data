@@ -402,6 +402,26 @@ export const BACKFILL_ENDPOINTS = {
     sourceDataset: 'twse/sbl_hist',
     url: (ymd) => `https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U?date=${ymd}&selectType=SLBNLB&response=json`,
   },
+  twse_qfiis_hist: {
+    cadence: 'daily',
+    sourceDataset: 'twse/qfiis_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/fund/MI_QFIIS?date=${ymd}&selectType=ALLBUT0999&response=json`,
+  },
+  twse_twt53u_hist: {
+    cadence: 'daily',
+    sourceDataset: 'twse/twt53u_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/afterTrading/TWT53U?date=${ymd}&selectType=ALL&response=json`,
+  },
+  twse_twtb4u_hist: {
+    cadence: 'daily',
+    sourceDataset: 'twse/twtb4u_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/dayTrading/TWTB4U?date=${ymd}&selectType=All&response=json`,
+  },
+  twse_bfiauu_hist: {
+    cadence: 'daily',
+    sourceDataset: 'twse/bfiauu_hist',
+    url: (ymd) => `https://www.twse.com.tw/rwd/zh/block/BFIAUU?date=${ymd}&selectType=S&response=json`,
+  },
   tpex_daily_quotes_hist: {
     cadence: 'daily',
     sourceDataset: 'tpex/daily_quotes_hist',
@@ -446,6 +466,11 @@ export const BACKFILL_ENDPOINTS = {
     cadence: 'monthly',
     sourceDataset: 'tpex/index_hist',
     url: (monthKey) => `https://www.tpex.org.tw/www/zh-tw/indexInfo/inx?date=${monthKey.slice(0, 4)}/${monthKey.slice(5, 7)}/01&response=json`,
+  },
+  twse_mfi94u_hist: {
+    cadence: 'monthly',
+    sourceDataset: 'twse/mfi94u_hist',
+    url: (monthKey) => `https://www.twse.com.tw/rwd/zh/TAIEX/MFI94U?date=${monthKey.replace('-', '')}01&response=json`,
   },
 };
 
