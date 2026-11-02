@@ -33,6 +33,28 @@ const PAUSE_RE = /^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/;
 const MAX_HISTORY = 50;
 
 const LEGACY_INSTI_LAST_DATE = '2012-05-01';
+const TWTB4U_FIRST_DATE = '2014-01-06';
+
+// Structure-only validation for raw-only W3 endpoints: no field names beyond the
+// 證券代號 key column, no title, no numeric parsing.
+function parseTwseStructure(payload) {
+  if (payload?.stat !== 'OK') throw new Error(`unexpected stat: ${payload?.stat}`);
+  const tables = Array.isArray(payload.tables) ? payload.tables : [payload];
+  let hasKeyTable = false;
+  for (const table of tables) {
+    if (!Array.isArray(table?.fields) || !Array.isArray(table?.data)) {
+      throw new Error('table must have fields and data arrays');
+    }
+    for (const row of table.data) {
+      if (!Array.isArray(row) || row.length !== table.fields.length) {
+        throw new Error('row width does not match fields');
+      }
+    }
+    if (table.fields[0] === '證券代號') hasKeyTable = true;
+  }
+  if (!hasKeyTable) throw new Error('no table with 證券代號 as first field');
+  return payload;
+}
 
 const DAILY_ENDPOINTS = [
   {
@@ -68,6 +90,15 @@ const DAILY_ENDPOINTS = [
     market: 'twse',
     parse: (payload, iso) => parseTwseSblHist(payload, iso.replaceAll('-', '')),
   },
+  { ...BACKFILL_ENDPOINTS.twse_qfiis_hist, market: 'twse', parse: parseTwseStructure },
+  { ...BACKFILL_ENDPOINTS.twse_twt53u_hist, market: 'twse', parse: parseTwseStructure },
+  {
+    ...BACKFILL_ENDPOINTS.twse_twtb4u_hist,
+    market: 'twse',
+    minIso: TWTB4U_FIRST_DATE,
+    parse: parseTwseStructure,
+  },
+  { ...BACKFILL_ENDPOINTS.twse_bfiauu_hist, market: 'twse', parse: parseTwseStructure },
   {
     ...BACKFILL_ENDPOINTS.tpex_daily_quotes_hist,
     market: 'tpex',
@@ -560,6 +591,7 @@ export async function runHistoryBackfill({
 
         for (const endpoint of dataEndpoints) {
           if (endpoint.maxIso && iso > endpoint.maxIso) continue;
+          if (endpoint.minIso && iso < endpoint.minIso) continue;
           const result = await processDataEndpoint(rootDir, endpoint, iso, fetchOptions);
           recordEndpoint(progress, endpoint, result);
           if (result.kind === 'failed') {
